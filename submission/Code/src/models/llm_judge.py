@@ -14,32 +14,24 @@ api_lock = threading.Lock()
 @pw.udf
 def build_consistency_prompt(backstory: str, character: str, evidence: str) -> str:
     return f"""
-You are a senior literary editor and consistency judge. You have been given a character's Hypothetical Backstory and a set of Evidence Excerpts from the novel (context).
+You are a literary consistency judge. Your task is to determine if a character's hypothesized backstory is globally consistent with the events of a novel.
 
-YOUR TASK:
-Determine if the Backstory overlaps with, supports, or CONTRADICTS the established events in the novel.
+Character: {character}
+Hypothesized Backstory: {backstory}
 
-INPUTS:
-1. Character: {character}
-2. Hypothetical Backstory: {backstory}
-3. Evidence Excerpts (with temporal metadata):
+Evidence from the novel:
 {evidence}
 
-ANALYSIS GUIDELINES:
-- **Temporal Consistency**: If the backstory claims an event happened in "childhood", but Evidence from "Chapter 1" (adult life) contradicts the *result* of that event, mark it Inconsistent. Use the [Chapter/Progress] tags to establish a timeline.
-- **Causal Consistency**: If the backstory claims a specific motivation (e.g., "hates water"), but Evidence shows them acting differently without explanation (e.g., "became a sailor"), it is a contradiction.
-- **Silence != Contradiction**: If the novel never mentions the backstory events, and they fit plausibly, it is CONSISTENT. Only explicit contradictions matter.
+Task:
+1. Carefully compare the backstory with the provided evidence.
+2. Determine if the backstory is "Consistent" (1) or "Contradicted" (0) by the evidence.
+3. Provide a concise 1-2 line rationale.
 
-OUTPUT FORMAT (JSON):
-Return a JSON object with exactly two keys:
+Output format (JSON):
 {{
-  "label": 1 (Consistent) or 0 (Contradict),
-  "rationale": "DOC: [Chapter X] Quote... -> This contradicts claim Y because..."
+  "label": 1 or 0,
+  "rationale": "Your explanation here"
 }}
-
-The 'rationale' MUST be a specialized 'Dossier' string:
-- Cite the specific EVIDENCE (Chapter/Progress) that drives your decision.
-- Explain the logic briefly (1-2 sentences).
 """
 
 class ConsistencyJudge:
@@ -118,8 +110,7 @@ class ConsistencyJudge:
                 }
                 try:
                     print(f"DEBUG: Starting local Ollama call ({self.model_name})...")
-                    # Increased timeout to 300s for complex reasoning
-                    response = requests.post(self.ollama_url, json=payload, timeout=300)
+                    response = requests.post(self.ollama_url, json=payload, timeout=120)
                     response.raise_for_status()
                     result = response.json()
                     content = result['message']['content']

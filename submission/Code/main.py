@@ -7,7 +7,7 @@ from src.models.llm_judge import ConsistencyJudge, build_consistency_prompt
 
 # Constants
 BOOKS_DIR = "Dataset/Books/"
-TRAIN_DATA = os.getenv("INPUT_DATA", "Dataset/test.csv")
+TRAIN_DATA = "Dataset/test.csv"
 OUTPUT_FILE = "results.csv"
 
 def main():
@@ -51,65 +51,21 @@ def main():
     # but let's try the simple version first.
 
     # 4. Retrieval
-    # retrieve_query returns a table with original columns + retrieved chunks + metadata
+    # retrieve_query returns a table with original columns + retrieved chunks
     # Note: Custom metadata filtering might be needed here.
     retrieved_results = retriever.retrieve(query_table, k=3)
 
     # retrieved_results has 'result' column which is a list of chunks
     # Let's join them into a single evidence string.
-    # NOTE: We now do book filtering HERE since metadata_filter was removed from retrieval
     @pw.udf
-    def combine_evidence(chunks: list, metadata: list, target_book: str) -> str:
-        """
-        Combines retrieved chunks into formatted evidence string.
-        Filters chunks to only include those from the target book.
-        """
+    def combine_evidence(chunks: list) -> str:
         if not chunks:
             return "No evidence found."
-        
-        formatted_evidence = []
-        # Handle cases where metadata might be missing or length mismatch
-        for i, chunk in enumerate(chunks):
-            # Pathway returns metadata as Json objects, need to convert to dict
-            meta = metadata[i] if i < len(metadata) else {}
-            
-            # Convert Pathway Json object to Python dict
-            if hasattr(meta, 'as_dict'):
-                meta = meta.as_dict()
-            elif hasattr(meta, 'to_dict'):
-                meta = meta.to_dict()
-            elif not isinstance(meta, dict):
-                # Fallback: try to convert it to dict somehow
-                try:
-                    meta = dict(meta)
-                except:
-                    meta = {}
-            
-            # BOOK FILTERING: Check if this chunk is from the target book
-            chunk_path = str(meta.get("path", "")).lower()
-            source_file = str(meta.get("source_file", "")).lower()
-            target_book_lower = target_book.lower()
-            
-            # Match if target book name appears in either path or source_file (case-insensitive)
-            # Handle both "The Count of Monte Cristo" and "In Search of the Castaways"
-            if target_book_lower not in chunk_path and target_book_lower not in source_file:
-                continue  # Skip chunks from other books
-            
-            chapter = meta.get("chapter", "Unknown Chapter")
-            progress = meta.get("progress_pct", "?")
-            
-            # Format: [SOURCE: Chapter 1 | 14%] Content...
-            entry = f"[{chapter} | {progress}%]\n{str(chunk)}"
-            formatted_evidence.append(entry)
-        
-        if not formatted_evidence:
-            return f"No evidence found from '{target_book}'."
-            
-        return "\n---\n".join(formatted_evidence)
+        return "\n---\n".join([str(c) for c in chunks])
 
     evidence_table = retrieved_results.select(
         *pw.this,
-        evidence=combine_evidence(pw.this.retrieved_chunks, pw.this.retrieved_metadata, pw.this.book_name)
+        evidence=combine_evidence(pw.this.retrieved_chunks)
     )
 
     # 5. Consistency Judgment
@@ -161,18 +117,6 @@ def main():
 
     # Pathway runs everything as a compute graph
     pw.run()
-    
-    # Post-processing: Clean up Pathway's internal columns (time, diff)
-    # This ensures the final CSV matches the submission format exactly
-    try:
-        df = pd.read_csv(OUTPUT_FILE)
-        # Keep only the required columns
-        required_cols = ["Story ID", "Prediction", "Rationale"]
-        df = df[required_cols]
-        df.to_csv(OUTPUT_FILE, index=False)
-        print(f"[INFO] Cleaned CSV output: {len(df)} predictions written to {OUTPUT_FILE}")
-    except Exception as e:
-        print(f"[WARNING] Could not clean CSV: {e}")
 
 if __name__ == "__main__":
     main()
