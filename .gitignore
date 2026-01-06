@@ -1,2 +1,9 @@
-/repos
-/.venv
+/venv
+.env
+__pycache__/
+*.pyc
+*.log
+results.csv
+Dataset/Books/
+Dataset/debug_small.csv
+.pathway/

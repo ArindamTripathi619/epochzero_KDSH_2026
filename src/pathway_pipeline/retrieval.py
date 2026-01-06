@@ -1,11 +1,12 @@
-
 import os
 import pathway as pw
+from typing import Optional
 from pathway.stdlib.indexing.nearest_neighbors import BruteForceKnnFactory
 from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.embedders import SentenceTransformerEmbedder
-from pathway.xpacks.llm.parsers import Utf8Parser
+from pathway.xpacks.llm.parsers import ParseUtf8
 from pathway.xpacks.llm.splitters import TokenCountSplitter
+
 
 class NarrativeRetriever:
     def __init__(self, books_dir: str, embedder_model: str = "all-MiniLM-L6-v2"):
@@ -16,7 +17,8 @@ class NarrativeRetriever:
         documents = pw.io.fs.read(
             self.books_dir,
             format="binary",
-            with_metadata=True
+            with_metadata=True,
+            mode="static"
         )
         
         # 2. Setup Indexing Components
@@ -35,7 +37,7 @@ class NarrativeRetriever:
         )
         
         # Parser for plain text novels
-        self.parser = Utf8Parser()
+        self.parser = ParseUtf8()
         
         # 3. Create Document Store
         self.store = DocumentStore(
@@ -47,11 +49,20 @@ class NarrativeRetriever:
 
     def retrieve(self, queries_table: pw.Table, k: int = 5):
         """
-        Retrieves relevant book chunks for queries in queries_table.
-        queries_table should have a 'query' column.
-        Optional metadata filtering can be handled if queries_table has a 'metadata_filter' column.
+        Retrieves relevant book chunks using lower-level query_as_of_now.
+        This bypasses DocumentStore's strict schema check and avoids NotImplementedError.
         """
-        return self.store.retrieve_query(queries_table, k=k)
+        index = self.store._retriever
+        
+        # We MUST select from the JoinResult returned by query_as_of_now 
+        # while adding it to the table to properly perform the join.
+        return queries_table + index.query_as_of_now(
+            queries_table.query,
+            number_of_matches=k,
+            metadata_filter=queries_table.metadata_filter
+        ).select(
+            retrieved_chunks=pw.right.text
+        )
 
 if __name__ == "__main__":
     print("NarrativeRetriever module initialized.")
