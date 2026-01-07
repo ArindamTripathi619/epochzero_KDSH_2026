@@ -53,7 +53,7 @@ def main():
     # 4. Retrieval
     # retrieve_query returns a table with original columns + retrieved chunks + metadata
     # Note: Custom metadata filtering might be needed here.
-    retrieved_results = retriever.retrieve(query_table, k=3)
+    retrieved_results = retriever.retrieve(query_table, k=15)
 
     # retrieved_results has 'result' column which is a list of chunks
     # Let's join them into a single evidence string.

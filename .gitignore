@@ -3,7 +3,15 @@
 __pycache__/
 *.pyc
 *.log
-results.csv
+
+# Datasets
 Dataset/Books/
 Dataset/debug_small.csv
+Dataset/temp_debug.csv
+Dataset/single_debug.csv
+
+# Outputs
+results.csv
+*_KDSH_2026.zip
+debug_retrieval_results.csv
 .pathway/

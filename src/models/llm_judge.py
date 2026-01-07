@@ -34,12 +34,13 @@ OUTPUT FORMAT (JSON):
 Return a JSON object with exactly two keys:
 {{
   "label": 1 (Consistent) or 0 (Contradict),
-  "rationale": "DOC: [Chapter X] Quote... -> This contradicts claim Y because..."
+  "rationale": "EVIDENCE: [Chapter X] Quote... -> CLAIM: Backstory says Y... -> ANALYSIS: This contradicts because..."
 }}
 
 The 'rationale' MUST be a specialized 'Dossier' string:
 - Cite the specific EVIDENCE (Chapter/Progress) that drives your decision.
-- Explain the logic briefly (1-2 sentences).
+- Explicitly link it to a specific CLAIM in the backstory.
+- Explain the logic briefly.
 """
 
 class ConsistencyJudge:

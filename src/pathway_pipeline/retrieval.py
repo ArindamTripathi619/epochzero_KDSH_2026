@@ -51,8 +51,8 @@ class NarrativeRetriever:
             
             # Basic Chapter DetectionRegex
             # Matches "CHAPTER I", "Chapter 1", "I.", etc. strictly at start of lines
-            # This is heuristic and might need tuning for specific books
-            chapter_pattern = r'(?m)^(?:CHAPTER|Chapter)\s+(?:[IVXLCDM\d]+|[A-Z]+).*$'
+            # This is heuristic and might need tuning for specific books. Now expanded to include "Part", "Book", etc.
+            chapter_pattern = r'(?m)^(?:CHAPTER|Chapter|PART|Part|BOOK|Book)\s+(?:[IVXLCDM\d]+|[A-Z]+).*$'
             
             matches = list(re.finditer(chapter_pattern, text))
             if not matches:

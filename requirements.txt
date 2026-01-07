@@ -1,12 +1,7 @@
-pathway[xpack-llm-local,xpack-llm-docs]
+pathway[xpack-llm-local,xpack-llm-docs]==0.9.0
 pathway-llm-app
-sentence-transformers
+sentence-transformers==2.2.2
 ollama
 openai
 pandas
-scikit-learn
-pydantic
 python-dotenv
-tqdm
-pdf2image
-unstructured
