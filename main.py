@@ -13,8 +13,8 @@ OUTPUT_FILE = "results.csv"
 def main():
     # 1. Initialize Components
     retriever = NarrativeRetriever(books_dir=BOOKS_DIR)
-    # Fallback to local Ollama (Mistral)
-    judge = ConsistencyJudge(use_cloud=False, model_name="mistral")
+    # LLM selection is now driven by env vars (USE_CLOUD, LLM_MODEL)
+    judge = ConsistencyJudge()
 
     # 2. Load Queries
     # PRE-PROCESSING HACK: Pathway hijacks any column named 'id' as a pointer.

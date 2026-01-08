@@ -43,48 +43,26 @@ Our comprehensive documentation is organized as follows:
 ### 📘 [01_Architecture_Overview.md](docs/01_Architecture_Overview.md)
 **What**: System design, components, and data flow  
 **For**: Understanding the high-level architecture  
-**Highlights**:
-- RAG pipeline diagram
-- Component descriptions (NarrativeRetriever, ConsistencyJudge)
-- Design decisions (why RAG, why k=15, why local LLM)
-- Track A compliance checklist
 
 ### 🐛 [02_Debugging_Journey.md](docs/02_Debugging_Journey.md)
 **What**: Technical challenges and solutions  
 **For**: Learning from our debugging process  
-**Highlights**:
-- **Critical Issue #1**: Pathway ID pointer problem (and the fix)
-- **Critical Issue #2**: Retrieval effectiveness (k=5 → k=15)
-- **Critical Issue #3**: Chapter detection robustness
-- **Critical Issue #4**: Validation implementation
-- **Critical Issue #5**: Performance bottleneck analysis
 
 ### ✅ [03_Validation_Analysis.md](docs/03_Validation_Analysis.md)
 **What**: Validation methodology and results  
 **For**: Understanding model accuracy and behavior  
-**Highlights**:
-- 62.5% accuracy on `train.csv`
-- "Silence != Contradiction" error analysis
-- Problem Statement alignment justification
-- ID bug fix verification
 
 ### ⚡ [04_Performance_Analysis.md](docs/04_Performance_Analysis.md)
 **What**: Runtime profiling and optimization strategies  
 **For**: Understanding bottlenecks and trade-offs  
-**Highlights**:
-- Embedding phase: 2-5 minutes (CPU-bound)
-- LLM inference: 15-20 minutes (dominant bottleneck)
-- Comparison: Local vs. Cloud LLM (10x speedup)
-- Optimization roadmap
 
 ### 🛠️ [05_Implementation_Guide.md](docs/05_Implementation_Guide.md)
 **What**: Code structure, usage, and troubleshooting  
 **For**: Running, modifying, and debugging the system  
-**Highlights**:
-- Quick start guide
-- Code walkthrough (main.py, retrieval.py, llm_judge.py)
-- Configuration options (k, LLM, chunking)
-- Common issues and fixes
+
+### 🤖 [06_LLM_Configuration.md](docs/06_LLM_Configuration.md)
+**What**: Switching between OpenAI, Anthropic, and Local models  
+**For**: Advanced configuration and cloud scaling
 
 ### 📚 Additional Documentation
 

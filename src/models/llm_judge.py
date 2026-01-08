@@ -44,31 +44,46 @@ The 'rationale' MUST be a specialized 'Dossier' string:
 """
 
 class ConsistencyJudge:
-    def __init__(self, use_cloud: bool = False, model_name: str = None):
+    def __init__(self, use_cloud: Optional[bool] = None, model_name: Optional[str] = None):
         from dotenv import load_dotenv
         load_dotenv()
         
-        self.use_cloud = use_cloud
-        self.model_name = model_name or ("anthropic/claude-3.5-sonnet" if use_cloud else "mistral")
+        # Priority: Constructor Arg > Env Var > Default
+        self.use_cloud = use_cloud if use_cloud is not None else (os.getenv("USE_CLOUD", "false").lower() == "true")
+        self.model_name = model_name or os.getenv("LLM_MODEL")
         
-        if use_cloud:
-            # OpenRouter is OpenAI-compatible
-            self.api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
-            self.base_url = "https://openrouter.ai/api/v1"
-            if not self.api_key:
+        if self.use_cloud:
+            self.openai_key = os.environ.get("OPENAI_API_KEY")
+            self.anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+            self.openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+            
+            # Default model if none provided
+            if not self.model_name:
+                if self.openai_key:
+                    self.model_name = "gpt-4o"
+                elif self.anthropic_key:
+                    self.model_name = "claude-3-5-sonnet-20240620"
+                elif self.openrouter_key:
+                    self.model_name = "anthropic/claude-3.5-sonnet"
+                else:
+                    self.model_name = "gpt-3.5-turbo" # Safe default
+            
+            # Determine Base URL and Key
+            self.base_url = os.getenv("OPENAI_API_BASE")
+            self.api_key = self.openai_key
+            
+            if self.openrouter_key and (not self.api_key or "openrouter" in self.model_name.lower()):
+                self.api_key = self.openrouter_key
+                self.base_url = self.base_url or "https://openrouter.ai/api/v1"
+            
+            if not self.api_key and not self.anthropic_key:
                 print("Warning: No API key found for cloud. Defaulting to local model.")
                 self.use_cloud = False
-            else:
-                self.model = llms.OpenAIChat(
-                    model=self.model_name,
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    max_tokens=500
-                )
         
         if not self.use_cloud:
+            self.model_name = self.model_name or "mistral"
             # We will use direct requests to Ollama to avoid LiteLLMChat async bugs
-            self.ollama_url = "http://localhost:11434/api/chat"
+            self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 
     def judge(self, prompts_table: pw.Table):
         """Applies the LLM model to the prompts with robust execution."""
@@ -76,29 +91,43 @@ class ConsistencyJudge:
         if self.use_cloud:
             @pw.udf
             def cloud_judge(prompt: str) -> str:
+                # Local imports inside UDF for Pathway pickling
                 from openai import OpenAI
+                import anthropic
                 
                 with api_lock:
-                    print(f"DEBUG: Starting cloud call for query...")
-                    client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-                    
-                    if "free" in self.model_name.lower():
-                        time.sleep(12)
-                    
                     try:
+                        # Anthropic Logic
+                        if self.anthropic_key and ("claude" in self.model_name.lower() and "openrouter" not in (self.base_url or "")):
+                            print(f"DEBUG: Starting Anthropic call ({self.model_name})...")
+                            client = anthropic.Anthropic(api_key=self.anthropic_key)
+                            message = client.messages.create(
+                                model=self.model_name,
+                                max_tokens=500,
+                                messages=[{"role": "user", "content": prompt}]
+                            )
+                            # Anthropic returns list of content blocks
+                            return message.content[0].text
+                        
+                        # OpenAI / OpenRouter Logic
+                        print(f"DEBUG: Starting OpenAI-compatible call ({self.model_name})...")
+                        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+                        
+                        # Handle OpenRouter free tier rate limits
+                        if self.base_url and "openrouter" in self.base_url and "free" in self.model_name.lower():
+                            time.sleep(1) # Reduced from 12s as OpenRouter free tier is better now
+                        
                         response = client.chat.completions.create(
                             model=self.model_name,
                             messages=[{"role": "user", "content": prompt}],
                             max_tokens=500
                         )
-                        content = response.choices[0].message.content
-                        print(f"DEBUG: Successfully processed query with {self.model_name}")
-                        return content
+                        return response.choices[0].message.content
                     except Exception as e:
-                        print(f"API Error for {self.model_name}: {e}")
+                        print(f"Cloud API Error ({self.model_name}): {e}")
                         return json.dumps({
                             "label": 0,
-                            "rationale": f"API Error: {str(e)}"
+                            "rationale": f"Cloud API Error: {str(e)}"
                         })
 
             return prompts_table.select(

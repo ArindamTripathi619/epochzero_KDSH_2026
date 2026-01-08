@@ -17,8 +17,13 @@ def create_submission():
     shutil.copy("main.py", SUBMISSION_DIR)
     shutil.copy("requirements.txt", SUBMISSION_DIR)
     shutil.copy("run_inference.sh", SUBMISSION_DIR)
-
-    # 2. Report
+    shutil.copy("validate_accuracy.py", SUBMISSION_DIR)
+    
+    # 2. Docs
+    print("Copying docs...")
+    shutil.copytree("docs", os.path.join(SUBMISSION_DIR, "docs"))
+    
+    # 3. Report
     print("Copying report...")
     report_dest = os.path.join(SUBMISSION_DIR, "Report.md")
     shutil.copy("submission/Report/Project_Report.md", report_dest)
