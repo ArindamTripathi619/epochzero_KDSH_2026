@@ -17,34 +17,33 @@ def main():
     judge = ConsistencyJudge(use_cloud=False, model_name="mistral")
 
     # 2. Load Queries
-    # Define schema from the CSV file
-    class QuerySchema(pw.Schema):
-        id: int
-        book_name: str
-        char: str
-        caption: str
-        content: str
+    # PRE-PROCESSING HACK: Pathway hijacks any column named 'id' as a pointer.
+    # We rename it to 'story_id_numeric' in a temporary file to preserve the values.
+    temp_data_path = TRAIN_DATA + ".tmp"
+    try:
+        df_input = pd.read_csv(TRAIN_DATA)
+        if 'id' in df_input.columns:
+            df_input.rename(columns={'id': 'story_id_numeric'}, inplace=True)
+        df_input.to_csv(temp_data_path, index=False)
+    except Exception as e:
+        print(f"[ERROR] Pre-processing failed: {e}")
+        temp_data_path = TRAIN_DATA
 
+    query_schema = pw.schema_from_csv(temp_data_path)
+    
     queries = pw.io.csv.read(
-        TRAIN_DATA,
-        schema=QuerySchema,
+        temp_data_path,
+        schema=query_schema,
         mode="static"
     )
 
     # 3. Preparation: Build retrieval queries
-    # DocumentStore expects a 'query' column.
-    # Advanced: use metadata_filter to narrow search to the specific book.
-    # The 'book_name' in train.csv needs to be mapped to the file path or a metadata field.
-    # pathway.io.fs.read puts the file name in metadata['path'].
-    
     query_table = queries.select(
-        query=pw.this["char"] + " " + pw.this["content"],
-        query_id=pw.this["id"],
-        character=pw.this["char"],
-        backstory=pw.this["content"],
-        book_name=pw.this["book_name"],
-        # Use string concatenation to avoid ANY type from UDF
-        metadata_filter="contains(path, '" + pw.this["book_name"] + "')"
+        query=queries.char + " " + queries.content,
+        query_id=queries.story_id_numeric,
+        character=queries.char,
+        backstory=queries.content,
+        book_name=queries.book_name
     )
     
     # Handle the 'In Search of the Castaways' capitalization fix using another select if needed, 

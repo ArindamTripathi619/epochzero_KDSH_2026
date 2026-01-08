@@ -2,7 +2,7 @@ import os
 import shutil
 import zipfile
 
-TEAM_NAME = "TEAM_NAME"  # Replace with actual team name
+TEAM_NAME = "epochzero"  # Replace with actual team name
 SUBMISSION_DIR = f"{TEAM_NAME}_KDSH_2026"
 ZIP_NAME = f"{SUBMISSION_DIR}.zip"
 

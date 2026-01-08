@@ -9,12 +9,11 @@ Dataset/Books/
 Dataset/debug_small.csv
 Dataset/temp_debug.csv
 Dataset/single_debug.csv
+Dataset/sample_train.csv
+Dataset/train.csv.tmp
 
 # Outputs
 results.csv
 *_KDSH_2026.zip
 debug_retrieval_results.csv
 .pathway/
-
-# Documentation
-docs/
