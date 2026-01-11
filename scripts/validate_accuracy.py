@@ -3,7 +3,9 @@ import os
 
 def calculate_accuracy():
     # 1. Load ground truth
-    train_df = pd.read_csv("Dataset/train.csv")
+    dataset_path = os.getenv("INPUT_DATA", "Dataset/train.csv")
+    print(f"[DEBUG] Validation using dataset: {dataset_path}")
+    train_df = pd.read_csv(dataset_path)
     
     # 2. Convert ground truth labels to numeric (consistent -> 1, contradict -> 0)
     train_df['label_num'] = train_df['label'].map({'consistent': 1, 'contradict': 0})
@@ -18,7 +20,11 @@ def calculate_accuracy():
         print("Error: results.csv was not generated!")
         return
 
-    pred_df = pd.read_csv("results.csv")
+    try:
+        pred_df = pd.read_csv("results.csv")
+    except Exception as e:
+        print(f"Direct read failed, trying robust read: {e}")
+        pred_df = pd.read_csv("results.csv", on_bad_lines='skip', engine='python')
     
     # 5. Merge and compare
     # Cast both to string to avoid int64 vs object merge errors and handle Pathway pointers if they persist

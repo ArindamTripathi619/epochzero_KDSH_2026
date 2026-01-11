@@ -11,22 +11,13 @@ from src.reasoning.constraint_rules import ConstraintRules
 # Constants
 BOOKS_DIR = "Dataset/Books/"
 TRAIN_DATA = os.getenv("INPUT_DATA", "Dataset/test.csv")
-OUTPUT_FILE = os.getenv("OUTPUT_FILE", "results.csv")
-
-import argparse
+OUTPUT_FILE = "results.csv"
 
 def main():
-    parser = argparse.ArgumentParser(description="Pathway LLH Pipeline - Narrative Consistency")
-    parser.add_argument("--use-expansion", action="store_true", help="Enable semantic query expansion")
-    parser.add_argument("--use-rerank", action="store_true", help="Enable evidence reranking")
-    parser.add_argument("--use-dual-pass", action="store_true", help="Enable dual-pass LLM reasoning")
-    args = parser.parse_args()
-
     # 1. Initialize Components
-    print(f"[DEBUG] Initializing components (Expansion: {args.use_expansion}, Reranking: {args.use_rerank}, Dual-Pass: {args.use_dual_pass})...")
     retriever = NarrativeRetriever(books_dir=BOOKS_DIR)
     # LLM selection is now driven by env vars (USE_CLOUD, LLM_MODEL)
-    judge = ConsistencyJudge(use_dual_pass=args.use_dual_pass)
+    judge = ConsistencyJudge()
 
     # 2. Load Queries
     # PRE-PROCESSING HACK: Pathway hijacks any column named 'id' as a pointer.
@@ -48,9 +39,7 @@ def main():
         schema=query_schema,
         mode="static"
     )
-    # print("DEBUG: verification of queries table")
-    # pw.debug.compute_and_print(queries)
-    
+
     # 3. Preparation: Build retrieval queries
     @pw.udf
     def expand_query(character: str, backstory: str) -> str:
@@ -74,9 +63,6 @@ def main():
         elif any(w in backstory.lower() for w in ["died", "death", "killed", "passed"]):
             conflict_seeds = "deceased burial tomb"
 
-        if not args.use_expansion:
-            return f"{base}"
-        
         return f"{base} {keywords} {conflict_seeds}"
 
     query_table = queries.select(
@@ -87,9 +73,9 @@ def main():
         book_name=queries.book_name
     )
     
-    # print("[DEBUG] Verification of query_table:")
-    # pw.debug.compute_and_print(query_table)
-    
+    # Handle the 'In Search of the Castaways' capitalization fix using another select if needed, 
+    # but let's try the simple version first.
+
     # 4. Retrieval
     @pw.udf
     def calculate_adaptive_k(backstory: str) -> int:
@@ -98,17 +84,15 @@ def main():
         More complex backstories need more evidence chunks.
         """
         word_count = len(backstory.split())
-        # Base k=25, add 1 for every 10 words, cap at 50
-        k = 25 + (word_count // 10)
-        return min(k, 50) 
+        # Base k=10, add 1 for every 20 words, cap at 30
+        k = 10 + (word_count // 20)
+        return min(k, 30)
 
     # retrieve_query returns a table with original columns + retrieved chunks + metadata
-    print("[DEBUG] Calling retriever.retrieve()...")
     retrieved_results = retriever.retrieve(
         query_table, 
         k=calculate_adaptive_k(query_table.backstory)
     )
-    print("[DEBUG] Retrieval query constructed (lazy)...")
 
     # 5. Reranking (Context Optimization)
     @pw.udf
@@ -153,106 +137,96 @@ def main():
                     score += 1
             
             scores.append(score)
-        
+            
         # Sort indices by score descending
         ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
         
-        # Return reranked chunks and metadata
         return (
             [chunks[i] for i in ranked_indices],
             [metadata[i] for i in ranked_indices]
         )
-    if args.use_rerank:
-        print("[DEBUG] Evidence Reranking enabled.")
-        processed_results = retrieved_results.select(
-            *pw.this,
-            reranked_data=rerank_by_contradiction_relevance(
-                pw.this.retrieved_chunks, 
-                pw.this.retrieved_metadata, 
-                pw.this.character,
-                pw.this.backstory
-            )
-        ).select(
-            *pw.this,
-            final_chunks=pw.this.reranked_data[0][:15], # TOP-N FILTERING (15)
-            final_metadata=pw.this.reranked_data[1][:15]
+
+    reranked_results = retrieved_results.select(
+        *pw.this,
+        reranked_data=rerank_by_contradiction_relevance(
+            pw.this.retrieved_chunks, 
+            pw.this.retrieved_metadata,
+            pw.this.character,
+            pw.this.backstory
         )
-    else:
-        processed_results = retrieved_results.select(
-            *pw.this,
-            final_chunks=pw.this.retrieved_chunks,
-            final_metadata=pw.this.retrieved_metadata
-        )
+    )
+    
+    # Extract tuples
+    processed_results = reranked_results.select(
+        *pw.this,
+        final_chunks=pw.this.reranked_data[0],
+        final_metadata=pw.this.reranked_data[1]
+    )
 
     # 6. Preparation of evidence and reasoning context
-    # Removed local build_consistency_prompt to use unified version from llm_judge.py
+    @pw.udf
+    def build_consistency_prompt(backstory: str, character: str, evidence: str, programmatic_analysis: str) -> str:
+        return f"""
+        Analyze if the provided Character Backstory is consistent with the Roman-Fleuve (Novel) Narrative.
+        
+        CHARACTER: {character}
+        BACKSTORY CLAIM: {backstory}
+        
+        --- NOVEL EVIDENCE ---
+        {evidence}
+        
+        --- PROGRAMMATIC ANALYSIS (Timeline & Entities) ---
+        {programmatic_analysis}
+        
+        --- INSTRUCTIONS ---
+        1. Identify any explicit or implicit contradictions between the Backstory and the Novel Evidence/Analysis.
+        2. Pay special attention to:
+           - Temporal Violations (e.g., in two places at once, dead while acting).
+           - Location mismatches for specific years.
+           - Status changes (e.g., imprisoned in narrative but free in backstory).
+        3. NEGATIVE EVIDENCE PROBE: If the novel is silent about a specific claim, explain that silence is NOT a contradiction unless the novel provides evidence for a MUTUALLY EXCLUSIVE state (e.g., 'he was in London' contradicts 'he stayed in Paris').
+        4. RATIONALE: Provide a detailed breakdown citing specific chapters or programmatic results.
+        
+        --- OUTPUT FORMAT ---
+        Result: [Consistent / Contradictory]
+        Confidence: [High / Medium / Low] (High if explicit evidence, Low if mostly silence)
+        Rationale: [Your detailed reasoning]
+        """
 
     @pw.udf
     def combine_evidence(chunks: list, metadata: list, target_book: str) -> str:
         """
-        Gathers only evidence related to the target book and prepares a formatted string.
+        Combines retrieved chunks into formatted evidence string.
+        Filters chunks to only include those from the target book.
         """
-        valid_chunks = []
-        valid_meta = []
+        if not chunks:
+            return "No evidence found."
         
-        # Normalize target book name (lowercase, underscores, strip extensions)
-        target_norm = target_book.lower().replace(" ", "_").replace(".txt", "").replace(".full", "")
-        
+        formatted_evidence = []
         for i, chunk in enumerate(chunks):
             meta = metadata[i] if i < len(metadata) else {}
-            # Handle Json objects from Pathway
-            if hasattr(meta, 'as_dict'): m_dict = meta.as_dict()
-            elif hasattr(meta, 'to_dict'): m_dict = meta.to_dict()
-            else: m_dict = dict(meta)
             
-            # FILE-BASED DEBUGGING FOR UDF
-            if i < 1:
-                try:
-                    with open("/home/DevCrewX/Projects/KDSH/logs/metadata_debug.txt", "a") as df:
-                        df.write(f"Story: {target_book} | TargetNorm: {target_norm}\n")
-                        df.write(f"Keys: {list(m_dict.keys())}\n")
-                        df.write(f"Path: {m_dict.get('path', 'N/A')}\n")
-                        df.write(f"Source: {m_dict.get('source_file', 'N/A')}\n\n")
-                except:
-                    pass
-
-            p = str(m_dict.get("path", "")).lower().replace(" ", "_")
-            s = str(m_dict.get("source_file", "")).lower().replace(" ", "_")
+            # Convert Pathway Json object to Python dict
+            if hasattr(meta, 'as_dict'):
+                meta = meta.as_dict()
+            elif hasattr(meta, 'to_dict'):
+                meta = meta.to_dict()
             
-            if target_norm in p or target_norm in s:
-                valid_chunks.append(chunk)
-                valid_meta.append(m_dict)
-
-        if not valid_chunks:
-            # BROADENING: If no match, try a more lenient word-based match
-            words = [w for w in target_norm.split("_") if len(w) > 3]
-            for i, chunk in enumerate(chunks):
-                meta = metadata[i] if i < len(metadata) else {}
-                if hasattr(meta, "as_dict"): m_dict = meta.as_dict()
-                elif hasattr(meta, "to_dict"): m_dict = meta.to_dict()
-                else: m_dict = dict(meta)
-                
-                path_str = str(m_dict.get("path", "")).lower()
-                if any(word in path_str for word in words):
-                    valid_chunks.append(chunk)
-                    valid_meta.append(m_dict)
+            chunk_path = str(meta.get("path", "")).lower()
+            source_file = str(meta.get("source_file", "")).lower()
+            target_book_lower = target_book.lower()
             
-            if not valid_chunks:
-                return f"No evidence found from '{target_book}' (Normalized: {target_norm}). Checked: {len(chunks)} chunks."
-
-        formatted_evidence = []
-        for i, chunk in enumerate(valid_chunks):
-            meta = valid_meta[i]
-            chapter = meta.get("chapter", "Unknown")
-            progress = meta.get("progress_pct", 0.0)
+            if target_book_lower not in chunk_path and target_book_lower not in source_file:
+                continue 
             
-            # Decode chunk if it is bytes
-            try:
-                text_chunk = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
-            except:
-                text_chunk = str(chunk)
-                
-            formatted_evidence.append(f"[{chapter} | {progress}%]\n{text_chunk}")
+            chapter = meta.get("chapter", "Unknown Chapter")
+            progress = meta.get("progress_pct", "?")
+            
+            entry = f"[{chapter} | {progress}%]\n{str(chunk)}"
+            formatted_evidence.append(entry)
+        
+        if not formatted_evidence:
+            return f"No evidence found from '{target_book}'."
             
         return "\n---\n".join(formatted_evidence)
 
@@ -260,9 +234,6 @@ def main():
         *pw.this,
         evidence=combine_evidence(pw.this.final_chunks, pw.this.final_metadata, pw.this.book_name)
     )
-    
-    # print("[DEBUG] Verification of evidence_table:")
-    # pw.debug.compute_and_print(evidence_table.select(pw.this.query_id, pw.this.book_name, pw.this.evidence))
 
     # 5. Programmatic Reasoning (Hybrid Layer)
     @pw.udf
@@ -274,25 +245,22 @@ def main():
         # Filter chunks for this book first (same logic as combine_evidence)
         valid_chunks = []
         valid_meta = []
-        target_norm = target_book.lower().replace(" ", "_").replace(".txt", "").replace(".full", "")
+        target_book_lower = target_book.lower()
         
         for i, chunk in enumerate(chunks):
             meta = metadata[i] if i < len(metadata) else {}
-            # Handle Json objects from Pathway
-            if hasattr(meta, 'as_dict'): m_dict = meta.as_dict()
-            elif hasattr(meta, 'to_dict'): m_dict = meta.to_dict()
-            else: m_dict = dict(meta)
+            if hasattr(meta, 'as_dict'): meta = meta.as_dict()
+            elif hasattr(meta, 'to_dict'): meta = meta.to_dict()
+            elif not isinstance(meta, dict):
+                try: meta = dict(meta)
+                except: meta = {}
             
-            p = str(m_dict.get("path", "")).lower().replace(" ", "_")
-            s = str(m_dict.get("source_file", "")).lower().replace(" ", "_")
-            
-            # print(f"[DEBUG] Checking chunk {i}: path={p} source={s} target={target_norm}", flush=True)
-            
-            if target_norm in p or target_norm in s:
-                valid_chunks.append(chunk)
-                valid_meta.append(m_dict)
+            path = str(meta.get("path", "")).lower()
+            source = str(meta.get("source_file", "")).lower()
+            if target_book_lower in path or target_book_lower in source:
+                valid_chunks.append(str(chunk))
+                valid_meta.append(meta)
 
-        # print(f"[DEBUG] Programmatic Reasoning: Filtered {len(valid_chunks)}/{len(chunks)} chunks for '{target_book}'")
         if not valid_chunks:
             return json.dumps({"conflicts": [], "summary": "No specific evidence for cross-referencing."})
 
@@ -316,10 +284,14 @@ def main():
             "summary": f"Detected {len(conflicts)} potential factual conflicts." if conflicts else "No programmatic conflicts detected."
         })
 
-    # 5. Programmatic Reasoning DISABLED
     reasoning_table = evidence_table.select(
         *pw.this,
-        programmatic_results=pw.apply(lambda x: "", pw.this.backstory) # Return empty string
+        programmatic_results=perform_programmatic_reasoning(
+            pw.this.backstory,
+            pw.this.final_chunks,
+            pw.this.final_metadata,
+            pw.this.book_name
+        )
     )
 
     # 6. Consistency Judgment
@@ -334,9 +306,6 @@ def main():
         )
     )
 
-    # print("[DEBUG] Verification of prompt_table:")
-    # pw.debug.compute_and_print(prompt_table.select(pw.this.query_id, pw.this.prompt))
-
     # Run LLM (Dual-Pass + Determinism)
     # 6. Judicial Reasoning
     final_reasoning = judge.judge(prompt_table)
@@ -345,24 +314,42 @@ def main():
     def extract_judgment_and_confidence(llm_response: str) -> tuple:
         """
         Parses LLM response for Result, Confidence, and Rationale.
-        Now expects JSON format: {"label": 0/1, "rationale": "..."}
+        Handles both our new format and the project's legacy JSON format if fallback occurs.
         """
-        try:
-            clean_json = llm_response
-            if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0]
-            data = json.loads(clean_json)
+        response = llm_response.lower()
+        
+        # 1. Result parsing
+        res = "Consistent"
+        if "contradictory" in response or '"label": 0' in response:
+            res = "Contradictory"
             
-            label = data.get("label", 1)
-            res = "Contradictory" if label == 0 else "Consistent"
-            rat = data.get("rationale", llm_response)
-            return res, "High", rat
-        except:
-            # Fallback for non-JSON or weird formats
-            response = llm_response.lower()
-            res = "Consistent"
-            if "contradictory" in response or '"label": 0' in response:
-                res = "Contradictory"
-            return res, "Low", llm_response
+        # 2. Confidence parsing
+        conf = "Medium"
+        if "confidence: high" in response or "high confidence" in response:
+            conf = "High"
+        elif "confidence: low" in response or "low confidence" in response:
+            conf = "Low"
+            
+        # 3. Rationale parsing
+        rat = llm_response
+        if "rationale:" in response:
+            # Case insensitive split
+            try:
+                idx = response.find("rationale:")
+                rat = llm_response[idx+len("rationale:"):].strip()
+            except:
+                pass
+        elif '"rationale":' in response:
+            try:
+                # Handle legacy JSON fallback
+                clean_json = llm_response
+                if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0]
+                data = json.loads(clean_json)
+                rat = data.get("rationale", llm_response)
+            except:
+                pass
+                
+        return res, conf, rat
 
     judged_table = final_reasoning.select(
         *pw.this,
@@ -377,10 +364,10 @@ def main():
     # 7. Output Generation
     @pw.udf
     def parse_label(judgment: str) -> int:
-        return 0 if judgment.lower() == "contradictory" else 1
+        return 1 if judgment.lower() == "contradictory" else 0
 
     output_table = judged_table.select(
-        **{"Story ID": pw.this.query_id},
+        Story_ID=pw.this.query_id,
         Prediction=parse_label(pw.this.judgment),
         Rationale=pw.this.rationale,
         Confidence=pw.this.confidence
@@ -388,12 +375,9 @@ def main():
 
     # Export to CSV
     pw.io.csv.write(output_table, OUTPUT_FILE)
-    print(f"[DEBUG] CSV Write scheduled to {OUTPUT_FILE}...")
-    
+
     # Pathway runs everything as a compute graph
-    print("[DEBUG] Starting pw.run()...", flush=True)
     pw.run()
-    print("[DEBUG] pw.run() finished.", flush=True)
     
     # Post-processing: Clean up Pathway's internal columns (time, diff)
     try:

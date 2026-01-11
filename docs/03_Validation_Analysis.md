@@ -4,15 +4,24 @@
 To ensure the reliability of our system before the final submission, we implemented a comprehensive validation harness:
 - **Script**: `validate_accuracy.py`
 - **Dataset**: `Dataset/train.csv` (80 labeled examples)
-- **Process**: 
-    1. Temporarily used `train.csv` as input (mimicking the test environment).
-    2. Runs the full RAG pipeline (Retrieval + LLM Judge).
-    3. Compares predictions (Consistent/Contradict) against the ground truth labels.
+- **Hybrid Process**: 
+    1. **Adaptive Retrieval**: Retrieves dynamic `k` chunks (10-30) based on query complexity.
+    2. **Programmatic Reasoning**: Deterministic check for year/location conflicts and known narrative constraints (prison, death).
+    3. **Multi-Stage LLM Judging**:
+        - **Stage 1 (Searcher)**: Aggressively searches for any potential contradiction.
+        - **Stage 2 (Verifier)**: Rigorously validates flags with high certainty thresholds to minimize false positives.
+    4. **Verification**: Compares binary labels against ground truth.
 
-## 2. Quantitative Results
+### Initial Baseline (Pre-Improvement)
 *   **Total Samples**: 80
-*   **Correct Predictions**: 50
 *   **Accuracy**: **62.50%**
+*   **Primary Error**: False Positives (over-conservative defaults).
+
+### Post-Improvement Results (Hybrid Reasoning)
+*   **Total Samples**: 80
+*   **Correct Predictions**: 52
+*   **Accuracy**: **65.00%**
+*   **Key Improvement**: Caught several location and temporal conflicts programmatically. However, "Silence != Contradiction" still dominates the LLM reasoning phase, leading to conservative labels for implicit contradictions that aren't caught by the deterministic rules.
 
 ## 3. Error Analysis
 We analyzed the 30 mismatches and observed a consistent, intentional pattern:

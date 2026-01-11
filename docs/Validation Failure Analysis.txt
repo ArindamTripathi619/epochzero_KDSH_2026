@@ -1,0 +1,56 @@
+Validation Failure Analysis - 35% Accuracy
+Critical Issue: Performance Degradation
+Previous Baseline: 65.0% accuracy
+Current Result: 35.0% accuracy (28/80 correct)
+Delta: -30 percentage points ❌
+
+Root Cause Analysis
+1. Overfitting to "Contradict" Label
+Looking at the sample mismatches:
+
+ID 46 (Thalcave): True=consistent, Pred=0 (contradict)
+ID 137 (Faria): True=contradict, Pred=1 (consistent)
+ID 74 (Kai-Koumou): True=consistent, Pred=0 (contradict)
+The system appears to be over-predicting contradictions (label=0), which means our "Aggressive Contradiction Search" (Stage 1) is flagging too many false positives, and Stage 2 is not filtering them effectively.
+
+2. Programmatic Reasoning Too Strict
+The constraint rules (imprisonment, death, location conflicts) may be triggering on weak signals or ambiguous phrasing, causing the system to reject valid backstories.
+
+3. Evidence Reranking Disruption
+The 
+rerank_by_contradiction_relevance
+ UDF may be over-prioritizing conflict-related chunks at the expense of supporting evidence, creating a biased evidence set that makes consistent backstories appear contradictory.
+
+4. Query Expansion Noise
+The expanded queries may be retrieving irrelevant chunks that introduce noise, confusing the LLM's judgment.
+
+5. Confidence Calibration Not Used
+While we added confidence scoring, we're not actually using it to filter borderline cases, so it's not helping accuracy.
+
+Specific Failure Patterns
+From the rationales:
+
+ID 46: "does not contain any explicit or implicit contradictions" → Yet predicted 0 (contradict)
+ID 137: "no specific evidence found" → Yet predicted 1 (consistent) when it should be 0
+ID 74: "no specific evidence found" → Yet predicted 0 (contradict)
+This suggests the system is inconsistent in handling "silence" cases.
+
+Recommendations
+Immediate Fixes (High Priority)
+Disable Programmatic Constraints Temporarily: Comment out the entity tracker, timeline validator, and constraint rules to isolate their impact.
+Revert Evidence Reranking: Test without reranking to see if it's causing the evidence quality to degrade.
+Simplify Query Expansion: Use only the original query (disable expansion) to reduce noise.
+Tune Dual-Pass Thresholds: The "Aggressive Search" may be too aggressive. Increase the confidence threshold for Stage 2 validation.
+Medium-Term Improvements
+Calibrated Filtering: Use the confidence scores to reject predictions below a threshold (e.g., confidence="Low" → abstain or default to consistent).
+Error Analysis: Manually review 10-20 failures to understand specific failure modes.
+Ablation Study: Test each component individually to measure its contribution to accuracy.
+Long-Term Strategy
+Supervised Fine-Tuning: If accuracy remains low, consider fine-tuning the local LLM on a curated dataset of consistent/contradict examples.
+Ensemble Voting: Run both the baseline (65%) and the enhanced system, using majority voting for final predictions.
+Next Steps
+✅ Document this failure clearly
+⬜ Revert to baseline implementation (65% accuracy)
+⬜ Test components individually via ablation
+⬜ Re-implement improvements incrementally with validation after each change
+⬜ Update Project_Report.md with final accuracy (likely reverting to 65%)

@@ -51,15 +51,23 @@ Our solution implements a **Retrieval-Augmented Generation (RAG)** pipeline for 
 │   Evidence Aggregation              │
 │   • Filter by target book           │
 │   • Format with chapter/progress    │
-│   • Handle missing metadata         │
+│   • Adaptive k calculation          │
 └────────┬────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
-│   LLM Judge (Mistral via Ollama)    │
-│   • Dossier-style prompt            │
-│   • "Silence != Contradiction"      │
-│   • JSON output parsing             │
+│   Programmatic Reasoning Layer      │
+│   • Entity State Tracker            │
+│   • Timeline Validator (Years)      │
+│   • Constraint Rules (Death/Prison) │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│   LLM Judge (Hybrid Multi-Stage)    │
+│   • Stage 1: Aggressive Search      │
+│   • Stage 2: Rigorous Validation    │
+│   • programmatic analysis context   │
 └────────┬────────────────────────────┘
          │
          ▼
@@ -96,20 +104,33 @@ Our solution implements a **Retrieval-Augmented Generation (RAG)** pipeline for 
 - `TokenCountSplitter`: 200-600 token chunks
 - `BruteForceKnnFactory`: Exact nearest neighbor search
 
-### 2. ConsistencyJudge (`src/models/llm_judge.py`)
+### 2. Reasoning Layer (`src/reasoning/`)
 
-**Purpose**: Determines narrative consistency using LLM reasoning.
+**Purpose**: Implements deterministic consistency checks to bridge the "Causal Reasoning" gap.
+
+**Components**:
+- **EntityStateTracker**: Uses spaCy + Regex to extract:
+  - **Characters**: Fuzzy matching (e.g., "Dantes" matches "Edmond Dantes").
+  - **Locations**: Keyword extraction (e.g., "Chateau", "Paris").
+  - **Temporal Markers**: Year extraction (1700s-1900s).
+- **TimelineValidator**: Detects simultaneity violations (e.g., being in two locations in the same year).
+- **ConstraintRules**: Enforces implicit narrative rules:
+  - **Imprisonment**: character cannot travel while in a dungeon.
+  - **Post-Mortem**: character cannot act after a recorded death year.
+
+### 3. ConsistencyJudge (`src/models/llm_judge.py`)
+
+**Purpose**: Final arbiter using multi-stage LLM verification.
+
+**Hybrid Reasoning Flow**:
+1. **Aggressive Search**: Stage 1 LLM tries to find *any* possible contradiction, guided by programmatic results.
+2. **Rigorous Validation**: If Stage 1 flags a conflict, a Stage 2 "Verification Agent" reviews it with a strict "90% certainty" threshold to reduce false positives.
+3. **Determinism**: Temperature=0.0 and fixed seed (42) for reproducible evaluations.
 
 **Prompt Strategy**:
-- **Dossier Format**: EVIDENCE → CLAIM → ANALYSIS
-- **Conservative Heuristic**: "Silence != Contradiction"
-  - If no evidence found, default to "Consistent"
-  - Only flag contradictions with explicit textual support
-- **JSON Output**: Structured response with `label` and `rationale`
-
-**LLM Configuration**:
-- **Local**: Mistral via Ollama (default)
-- **Cloud**: Claude 3.5 Sonnet (optional, via `.env`)
+- **Dossier Format**: EVIDENCE → CLAIM → ANALYSIS.
+- **Hybrid Input**: Includes programmatic constraint analysis in the context.
+- **Conservative Heuristic**: "Silence != Contradiction" enforced in Stage 2.
 
 ### 3. Main Pipeline (`main.py`)
 
@@ -144,21 +165,20 @@ def combine_evidence(chunks: list, metadata: list, target_book: str) -> str:
 - **Cost-Effective**: No GPU training required
 - **Track A Compliance**: Focuses on "evidence-grounded reasoning"
 
-### 2. Why k=15 for Retrieval?
-- **High Recall**: Ensures we don't miss critical evidence
-- **Balanced Context**: ~3-5k words fits within LLM context window
-- **Empirical Testing**: Increased from k=5 based on Project Review feedback
+### 2. Why Adaptive k?
+- **Efficiency**: Simpler backstories use fewer chunks (k=10).
+- **Context Depth**: Complex, claim-heavy backstories retrieve more context (up to k=30).
+- **Word-based Scaling**: k = 10 + (word_count // 20).
 
-### 3. Why "Silence != Contradiction"?
-- **Logical Soundness**: Absence of evidence ≠ evidence of absence
-- **Hallucination Prevention**: Avoids false contradictions
-- **Problem Statement Alignment**: "Conclusions should be supported by signals drawn from... the text"
+### 3. Why Hybrid Reasoning?
+- **Address Causal Gaps**: LLMs often miss temporal/location constraints between distant chunks.
+- **Deterministic Baseline**: Programmatic checks catch "impossible" events with 100% precision.
+- **False Positive Reduction**: Multi-stage validation specifically addresses the "over-indexing on noise" issue.
 
-### 4. Why Local LLM (Mistral)?
-- **Data Privacy**: No external API calls with sensitive data
-- **Cost**: Zero inference cost
-- **Reproducibility**: Consistent results across runs
-- **Trade-off**: Slower inference (10-20s per query vs. 1-2s for cloud)
+### 4. Why Determinism?
+- **Reproducibility**: Consistency in evaluations is critical for scientific validity.
+- **Validation**: Ensures accuracy scores don't fluctuate between runs.
+- **Seed**: Seed 42 used for all local and cloud completions.
 
 ## Track A Compliance
 

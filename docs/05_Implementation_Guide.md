@@ -10,6 +10,9 @@ python3 --version
 # Ollama installed and running
 ollama --version
 ollama pull mistral
+
+# New requirements for hybrid reasoning
+./venv/bin/python3 -m spacy download en_core_web_sm
 ```
 
 ### Installation
@@ -102,6 +105,19 @@ def parse_rationale(result_js: str) -> str:
     data = json.loads(result_js)
     return str(data.get("rationale", "No rationale provided"))
 ```
+@pw.udf
+def perform_programmatic_reasoning(backstory: str, chunks: list, metadata: list, target_book: str) -> str:
+    """
+    Executes deterministic consistency checks before LLM judging.
+    
+    Modules called:
+    - EntityStateTracker: Parses backstory for years/locations/persons.
+    - TimelineValidator: Checks for location-year simultaneity conflicts.
+    - ConstraintRules: Enforces prison/death logic.
+    
+    Returns: JSON string with 'conflicts' list for LLM context.
+    """
+    return json.dumps(results)
 
 ### NarrativeRetriever (`src/pathway_pipeline/retrieval.py`)
 
@@ -153,6 +169,16 @@ def ensure_path_in_metadata(meta: dict) -> dict:
         meta["path"] = "Unknown"
     return meta
 ```
+
+### Reasoning Engine (`src/reasoning/`)
+
+**Purpose**: Bridges the causal reasoning gap with deterministic checks.
+
+- **`entity_tracker.py`**: Extracts years, locations, and persons using spaCy and keyword fallbacks.
+- **`timeline_validator.py`**: Detects if a character is in two places at once by comparing backstory claims against narrative state chunks sharing the same year.
+- **`constraint_rules.py`**: Enforces physical impossibilities:
+    - **Imprisonment**: If narrative snippet contains prison keywords, character cannot be in an external location in the same year.
+    - **Death**: If character is marked as dead in a year, backstory cannot claim activities in later years.
 
 ### ConsistencyJudge (`src/models/llm_judge.py`)
 

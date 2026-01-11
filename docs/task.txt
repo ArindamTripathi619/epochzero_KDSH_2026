@@ -1,0 +1,132 @@
+Task: Project Improvements from Review Feedback
+Current Status: Planning Complete, Ready for Review
+Review Summary
+Overall Score: 6/10 (Borderline Accept)
+Critical Gap: Causal reasoning (4/10) due to lack of programmatic constraint tracking
+Validation Accuracy: 62.5% with systematic false positives (30/80 errors)
+Key Strength: Pathway integration (9/10), engineering quality (9/10)
+Phase 1: Constraint Extraction & Timeline Validation (CRITICAL)
+ Entity State Tracking
+ Create src/reasoning/entity_tracker.py
+ Implement state extraction from chunks (NER + relation extraction)
+ Implement conflict detection (temporal, belief, causal)
+ Integrate into 
+main.py
+ pre-LLM pipeline
+ Timeline Graph Construction
+ Create src/reasoning/timeline_validator.py
+ Build temporal constraint graph (NetworkX DAG)
+ Implement timeline validation logic
+ Integrate as pre-filter before LLM call
+ Implicit Constraint Inference
+ Create src/reasoning/constraint_rules.py
+ Define constraint templates (location_exclusivity, state_incompatibility, causal_dependency)
+ Implement template application logic
+ Integrate alongside entity tracker
+Target: Detect programmatic contradictions that don't require LLM reasoning
+
+Phase 2: Multi-Stage Verification Pipeline (HIGH PRIORITY)
+ Evidence Reranking
+ Implement contradiction-aware reranking UDF
+ Add temporal mismatch scoring
+ Add entity mention overlap scoring
+ Add contradiction keyword detection
+ Dual-Pass LLM Reasoning
+ Create aggressive contradiction search prompt
+ Create rigorous validation prompt
+ Implement two-stage pipeline
+ Add early termination logic
+ Confidence Calibration
+ Update JSON schema to include confidence score
+ Implement confidence calculation logic
+ Integrate with dual-pass results
+Target: Reduce false positives from 37.5% to <12.5%
+
+Phase 3: Enhanced Retrieval Strategy (MEDIUM PRIORITY)
+ Adaptive k Selection
+ Implement complexity-based k calculation
+ Add claim counting logic
+ Add entity counting logic
+ Integrate into retrieval call
+ Query Expansion
+ Implement query paraphrase generation
+ Update retrieval to handle multiple queries
+ Implement merge and deduplication logic
+Target: Improve evidence coverage from 1.5% to 2-3% of book
+
+Phase 4: Determinism & Reproducibility (MEDIUM PRIORITY)
+ LLM Temperature Control
+ Add temperature=0.0 to OpenAI calls
+ Add temperature=0.0 to Ollama calls
+ Add seed parameter to both
+ Embedding Determinism
+ Set torch random seeds
+ Set CUDA seeds (if available)
+Target: Achieve reproducible results across runs
+
+Phase 5: Testing & Validation (HIGH PRIORITY)
+ Stress Test Suite
+ Create tests/test_constraint_reasoning.py
+ Add temporal violation tests
+ Add belief-action mismatch tests
+ Add causal impossibility tests
+ Add edge case tests
+ Validation Re-Run
+ Run 
+validate_accuracy.py
+ on updated pipeline
+ Perform detailed error analysis
+ Compare with baseline (62.5%)
+ Document improvements
+Target: Achieve 80%+ accuracy with balanced error distribution
+
+Phase 6: Documentation Updates (MEDIUM PRIORITY)
+ Update Architecture Overview
+ Add Constraint Reasoning Layer section
+ Update system diagram
+ Document hybrid reasoning approach
+ Update Validation Report
+ Add post-improvement results
+ Update error analysis
+ Document acceptable error limits
+ Update Implementation Guide
+ Add constraint reasoning setup
+ Add new dependencies (spaCy, networkx)
+ Update configuration options
+Success Metrics
+Quantitative Targets
+Metric	Current	Target	Stretch
+Validation Accuracy	62.5%	80%	85%
+False Positives	37.5%	<12.5%	<6.25%
+False Negatives	0%	<12.5%	<6.25%
+Qualitative Targets
+ System detects temporal violations
+ System detects belief-action mismatches
+ System detects causal impossibilities
+ Rationales cite programmatic constraints
+ Deterministic output
+ Review score improves from 6/10 to 8/10
+Dependencies to Add
+spacy + en_core_web_sm: NER and entity extraction
+networkx: Timeline graph construction
+dateparser: Temporal expression parsing
+Estimated Timeline
+Phase 1: 8-12 hours (critical path)
+Phase 2: 4-6 hours
+Phase 3: 3-4 hours
+Phase 4: 1-2 hours
+Phase 5: 3-4 hours
+Phase 6: 2-3 hours
+Total: 21-31 hours
+Previously Completed Work
+ Initial RAG pipeline implementation
+ Pathway integration (9/10 quality)
+ Chapter-aware splitting
+ Temporal metadata extraction
+ Book-specific filtering
+ Dual LLM support (local/cloud)
+ Numeric ID preservation fix
+ Comprehensive documentation suite
+ Validation harness implementation
+ Final inference on test.csv
+ Submission package generation
