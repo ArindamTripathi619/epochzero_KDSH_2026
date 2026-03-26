@@ -2,13 +2,13 @@
 
 A hybrid RAG-based classification system for detecting narrative contradictions in historical fiction and literary classics.
 
-## Current Accuracy: **65.00%** (52/80)
+## Current Accuracy: **68.75%** (55/80)
 
 ## System Overview
 
-This project uses **Pathway** for high-performance vector retrieval and a two-stage reasoning pipeline:
-1. **NLI Filter**: High-recall candidate flagging using `nli-deberta-v3-small`.
-2. **LLM Verification**: High-precision chain-of-thought verification using local **Groq/Llama-3** via the LiteLLM Rotator.
+This project uses **Pathway** for high-performance vector retrieval and a unified **LLM-First** reasoning pipeline:
+1. **NLI Reranker**: Cross-encoder (`ms-marco-MiniLM-L6-v2`) used for high-precision snippet re-ranking.
+2. **LLM Verification**: High-precision reasoning using **DeepSeek R1** (70B) via the local rotator.
 
 ## Quick Start
 

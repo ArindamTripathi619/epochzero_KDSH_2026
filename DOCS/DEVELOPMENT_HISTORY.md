@@ -1,32 +1,30 @@
-# Development History — The Road to 65% Accuracy
+# Development History — The Road to 68.75% Accuracy
 
-This document outlines the major architectural shifts, hardships, and design decisions made during the stabilization of the narrative consistency pipeline.
+This document outlines the major architectural shifts, hardships, and design decisions made during the evolution of the narrative consistency pipeline.
 
 ## 1. The "JSON Trap" (Early Hardship)
 
-**Problem**: Forcing the LLM to output structured JSON (`response_format={"type": "json_object"}`) significantly degraded reasoning quality. The model would often prioritize the output format over the logic, leading to "over-conservative" results (defaulting to Consistent).
+**Problem**: Forcing the LLM to output structured JSON significantly degraded reasoning quality. The model would prioritize formatting over logic, leading to "over-conservative" results.
 
-**Solution**: Switched to **Chain-of-Thought (CoT)** prompting. We removed the JSON constraint and implemented a manual parser to extract the `VERDICT: [LABEL]` tag. This allowed the model to "think" as much as it needed before committing to a label.
+**Solution**: Switched to **Chain-of-Thought (CoT)** prompting. We removed the JSON constraint, allowing DeepSeek R1 to "think" as much as it needed before committing to a final `VERDICT` tag. 
 
-## 2. NLI Threshold Pitfalls
+## 2. The NLI Reranking Pivot (Strategy 4)
 
-**Problem**: The `nli-deberta-v3-small` model is fast but prone to noise. 
-- **Relaxed Thresholds (0.82/0.75)**: Caught 21/29 real contradictions but produced **40 False Positives**, dropping accuracy to 40%.
-- **Architecture Reversal**: Trusting NLI directly (without LLM override) failed because of this low precision.
+**Problem**: NLI models (DeBERTa) were initially used as primary judges but produced too many False Positives (over 40%). Conversely, raw vector search often missed the "smoking gun" evidence in large chapters.
 
-**Decision**: Reverted to **High-Confidence NLI Flags (0.90) + LLM Override**. This ensures the LLM applies its "common sense" wisdom to NLI-flagged contradictions, which is where the 65% accuracy plateau is currently held.
+**Solution**: Repositioned NLI as a **Passive Reranker**. We used the NLI Cross-Encoder to reshuffle the Top-100 vector-search results, ensuring that the best evidence was in the Top-20 window for the LLM. 100% of final verdicts shifted to the LLM (Strategy 4), which pushed accuracy from 63% to 68.75%.
 
-## 3. Propagation of Metadata
+## 3. Metadata Grounding Hurdles
 
-**Hardship**: Propagating chapter metadata correctly across the Pathway compute graph was critical for giving the LLM context. Without "Chapter X" headers, the LLM struggled to determine if events happened at different times or if they truly conflicted.
+**Hardship**: We attempted an **Entity Grounding** fix by passing specific character names to the LLM. 
+**Result**: Accuracy dropped to 65.00%. 
+**Discovery**: We identified that ~15% of the `train.csv` character assignments are incorrect (e.g., backstory for Jacques Paganel mislabeled as "Thalcave"). Giving the LLM the "wrong" character name caused it to ignore valid evidence. We successfully reverted to a **Pure-Text reasoning** model to bypass this metadata noise.
 
-## 4. Why We Stayed with Hybrid (NLI + LLM)
+## 4. Context Dilution Plateau
 
-We considered an **LLM-First** approach (sending all 80 stories to LLM), but stayed with the **NLI-Filter** for three reasons:
-1. **Cost/Speed**: NLI filtering reduces LLM calls by 60%.
-2. **Precision**: High-confidence NLI flags provide a grounded "seed" for the LLM to verify.
-3. **Reproducibility**: Local NLI acts as a deterministic anchor for the stochastic LLM.
+**Hardship**: We tested expanding the evidence window from 20 to 25 snippets.
+**Result**: Accuracy dropped to 63.75%. 
+**Lesson**: Increasing context beyond 20 snippets introduces "noise" that drowns out the contradiction and causes the LLM to hallucinate consistency. **Top-20 Reranked** is the definitive sweet spot for DeepSeek R1.
 
-## Lessons Learned
-- **Prompt Safety**: Passing NLI rationale to the LLM introduced *Confirmation Bias*. Giving the LLM raw evidence for independent judgment improved accuracy.
-- **Temporal Reasoning**: Pure NLI models are terrible at years. A secondary regex check for temporal clashes is a high-accuracy mandatory component.
+## Final Milestone: 68.75% (55/80)
+We reached a stable plateau at 68.75% using Strategy 4 (LLM-First + Top-20 Reranking). This architecture represents the most balanced trade-off between retrieval recall and reasoning precision.
