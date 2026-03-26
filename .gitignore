@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 *.log
+.agent/
 
 # Datasets
 Dataset/Books/
@@ -18,3 +19,7 @@ results.csv
 debug_retrieval_results.csv
 .pathway/
 logs/
+API_REPORT.md
+Dataset/train_parts/
+Dataset/test_eval/
+.entities_cache.pkl

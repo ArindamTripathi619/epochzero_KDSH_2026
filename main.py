@@ -1,372 +1,256 @@
-import os
-import json
 import pathway as pw
 import pandas as pd
-from src.pathway_pipeline.retrieval import NarrativeRetriever
-from src.models.llm_judge import ConsistencyJudge, build_consistency_prompt
-from src.reasoning.entity_tracker import EntityStateTracker
-from src.reasoning.timeline_validator import TimelineValidator
-from src.reasoning.constraint_rules import ConstraintRules
+import os
+import json
+import spacy
+from typing import List, Dict, Tuple
 
-# Constants
-BOOKS_DIR = "Dataset/Books/"
-TRAIN_DATA = os.getenv("INPUT_DATA", "Dataset/test.csv")
-OUTPUT_FILE = os.getenv("OUTPUT_FILE", "results.csv")
+# Configuration
+INPUT_BOOKS_DIR = "Dataset/Books/"
+INPUT_TRAIN_FILE = "Dataset/train.csv"
+OUTPUT_FILE = "results.csv"
 
-import argparse
+# Global entities/tracker imports for top-level if needed (though we rely on UDF internal imports)
+try:
+    from src.reasoning.entity_tracker import EntityStateTracker
+    from src.reasoning.timeline_validator import TimelineValidator
+    from src.reasoning.constraint_rules import ConstraintRules
+except ImportError:
+    pass
 
-def main():
-    parser = argparse.ArgumentParser(description="Pathway LLH Pipeline - Narrative Consistency")
-    parser.add_argument("--use-expansion", action="store_true", help="Enable semantic query expansion")
-    parser.add_argument("--use-rerank", action="store_true", help="Enable evidence reranking")
-    parser.add_argument("--use-dual-pass", action="store_true", help="Enable dual-pass LLM reasoning")
-    args = parser.parse_args()
-
-    # 1. Initialize Components
-    print(f"[DEBUG] Initializing components (Expansion: {args.use_expansion}, Reranking: {args.use_rerank}, Dual-Pass: {args.use_dual_pass})...")
-    retriever = NarrativeRetriever(books_dir=BOOKS_DIR)
-    # LLM selection is now driven by env vars (USE_CLOUD, LLM_MODEL)
-    judge = ConsistencyJudge(use_dual_pass=args.use_dual_pass)
-
-    # 2. Load Queries
-    # PRE-PROCESSING HACK: Pathway hijacks any column named 'id' as a pointer.
-    # We rename it to 'story_id_numeric' in a temporary file to preserve the values.
-    temp_data_path = TRAIN_DATA + ".tmp"
+@pw.udf
+def perform_programmatic_reasoning(backstory: str, chunks: list, metadata: list, book_name: str) -> str:
+    import json
+    import spacy
+    print(f"[DEBUG] Programmatic reasoning for a backstory (book: {book_name})")
     try:
-        df_input = pd.read_csv(TRAIN_DATA)
-        if 'id' in df_input.columns:
-            df_input.rename(columns={'id': 'story_id_numeric'}, inplace=True)
-        df_input.to_csv(temp_data_path, index=False)
-    except Exception as e:
-        print(f"[ERROR] Pre-processing failed: {e}")
-        temp_data_path = TRAIN_DATA
-
-    query_schema = pw.schema_from_csv(temp_data_path)
-    
-    queries = pw.io.csv.read(
-        temp_data_path,
-        schema=query_schema,
-        mode="static"
-    )
-    # print("DEBUG: verification of queries table")
-    # pw.debug.compute_and_print(queries)
-    
-    # 3. Preparation: Build retrieval queries
-    @pw.udf
-    def expand_query(character: str, backstory: str) -> str:
-        """
-        Generates semantically diverse queries to improve recall.
-        Uses character name + key phrases from backstory.
-        Output is a space-separated string of tokens for the vector index.
-        """
-        # 1. Base Query
-        base = f"{character} {backstory}"
+        from src.reasoning.entity_tracker import EntityStateTracker
+        from src.reasoning.timeline_validator import TimelineValidator
+        from src.reasoning.constraint_rules import ConstraintRules
         
-        # 2. Key phrases extraction (simple heuristic)
-        import re
-        words = re.findall(r'\b[A-Za-z]{5,}\b', backstory) # Long descriptive words
-        keywords = " ".join(words[:15]) if words else backstory
-        
-        # 3. Conflict indicators (to drift search towards sensitive areas)
-        conflict_seeds = ""
-        if any(w in backstory.lower() for w in ["imprison", "jail", "cell", "prison"]):
-            conflict_seeds = "confinement dungeon captive"
-        elif any(w in backstory.lower() for w in ["died", "death", "killed", "passed"]):
-            conflict_seeds = "deceased burial tomb"
-
-        if not args.use_expansion:
-            return f"{base}"
-        
-        return f"{base} {keywords} {conflict_seeds}"
-
-    query_table = queries.select(
-        query=expand_query(queries.char, queries.content),
-        query_id=queries.story_id_numeric,
-        character=queries.char,
-        backstory=queries.content,
-        book_name=queries.book_name
-    )
-    
-    # print("[DEBUG] Verification of query_table:")
-    # pw.debug.compute_and_print(query_table)
-    
-    # 4. Retrieval
-    @pw.udf
-    def calculate_adaptive_k(backstory: str) -> int:
-        """
-        Calculates k based on claim complexity.
-        More complex backstories need more evidence chunks.
-        """
-        word_count = len(backstory.split())
-        # Base k=25, add 1 for every 10 words, cap at 50
-        k = 25 + (word_count // 10)
-        return min(k, 50) 
-
-    # retrieve_query returns a table with original columns + retrieved chunks + metadata
-    print("[DEBUG] Calling retriever.retrieve()...")
-    retrieved_results = retriever.retrieve(
-        query_table, 
-        k=calculate_adaptive_k(query_table.backstory)
-    )
-    print("[DEBUG] Retrieval query constructed (lazy)...")
-
-    # 5. Reranking (Context Optimization)
-    @pw.udf
-    def rerank_by_contradiction_relevance(chunks: list, metadata: list, character: str, backstory: str) -> tuple:
-        """
-        Reranks chunks based on potential for contradiction.
-        Priority:
-        1. Mentions the Character + backstory keywords.
-        2. Contains years matching backstory.
-        3. Simple heuristic for negation/conflict keywords.
-        """
-        if not chunks:
-            return ([], [])
-            
-        scores = []
-        back_lower = backstory.lower()
-        char_lower = character.lower()
-        
-        for i, chunk in enumerate(chunks):
-            chunk_s = str(chunk).lower()
-            score = 0
-            
-            # Entity match bonus
-            if char_lower in chunk_s:
-                score += 5
-            
-            # Keyword fragments (simple heuristic)
-            for word in back_lower.split()[:10]: # Check first 10 words of backstory
-                if len(word) > 4 and word in chunk_s:
-                    score += 1
-            
-            # Temporal overlap detection in chunk
-            import re
-            years = re.findall(r'\b(17|18|19)\d{2}\b', chunk_s)
-            if years:
-                score += 2
-                
-            # Conflict keyword bonus
-            conflict_words = ["not", "never", "only", "instead", "imprisoned", "died"]
-            for cw in conflict_words:
-                if cw in chunk_s:
-                    score += 1
-            
-            scores.append(score)
-        
-        # Sort indices by score descending
-        ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        
-        # Return reranked chunks and metadata
-        return (
-            [chunks[i] for i in ranked_indices],
-            [metadata[i] for i in ranked_indices]
-        )
-    if args.use_rerank:
-        print("[DEBUG] Evidence Reranking enabled.")
-        processed_results = retrieved_results.select(
-            *pw.this,
-            reranked_data=rerank_by_contradiction_relevance(
-                pw.this.retrieved_chunks, 
-                pw.this.retrieved_metadata, 
-                pw.this.character,
-                pw.this.backstory
-            )
-        ).select(
-            *pw.this,
-            final_chunks=pw.this.reranked_data[0][:15], # TOP-N FILTERING (15)
-            final_metadata=pw.this.reranked_data[1][:15]
-        )
-    else:
-        processed_results = retrieved_results.select(
-            *pw.this,
-            final_chunks=pw.this.retrieved_chunks,
-            final_metadata=pw.this.retrieved_metadata
-        )
-
-    # 6. Preparation of evidence and reasoning context
-    # Removed local build_consistency_prompt to use unified version from llm_judge.py
-
-    @pw.udf
-    def combine_evidence(chunks: list, metadata: list, target_book: str) -> str:
-        """
-        Gathers only evidence related to the target book and prepares a formatted string.
-        """
-        valid_chunks = []
-        valid_meta = []
-        
-        # Normalize target book name (lowercase, underscores, strip extensions)
-        target_norm = target_book.lower().replace(" ", "_").replace(".txt", "").replace(".full", "")
-        
-        for i, chunk in enumerate(chunks):
-            meta = metadata[i] if i < len(metadata) else {}
-            # Handle Json objects from Pathway
-            if hasattr(meta, 'as_dict'): m_dict = meta.as_dict()
-            elif hasattr(meta, 'to_dict'): m_dict = meta.to_dict()
-            else: m_dict = dict(meta)
-            
-            # FILE-BASED DEBUGGING FOR UDF
-            if i < 1:
-                try:
-                    with open("/home/DevCrewX/Projects/KDSH/logs/metadata_debug.txt", "a") as df:
-                        df.write(f"Story: {target_book} | TargetNorm: {target_norm}\n")
-                        df.write(f"Keys: {list(m_dict.keys())}\n")
-                        df.write(f"Path: {m_dict.get('path', 'N/A')}\n")
-                        df.write(f"Source: {m_dict.get('source_file', 'N/A')}\n\n")
-                except:
-                    pass
-
-            p = str(m_dict.get("path", "")).lower().replace(" ", "_")
-            s = str(m_dict.get("source_file", "")).lower().replace(" ", "_")
-            
-            if target_norm in p or target_norm in s:
-                valid_chunks.append(chunk)
-                valid_meta.append(m_dict)
-
-        if not valid_chunks:
-            # BROADENING: If no match, try a more lenient word-based match
-            words = [w for w in target_norm.split("_") if len(w) > 3]
-            for i, chunk in enumerate(chunks):
-                meta = metadata[i] if i < len(metadata) else {}
-                if hasattr(meta, "as_dict"): m_dict = meta.as_dict()
-                elif hasattr(meta, "to_dict"): m_dict = meta.to_dict()
-                else: m_dict = dict(meta)
-                
-                path_str = str(m_dict.get("path", "")).lower()
-                if any(word in path_str for word in words):
-                    valid_chunks.append(chunk)
-                    valid_meta.append(m_dict)
-            
-            if not valid_chunks:
-                return f"No evidence found from '{target_book}' (Normalized: {target_norm}). Checked: {len(chunks)} chunks."
-
-        formatted_evidence = []
-        for i, chunk in enumerate(valid_chunks):
-            meta = valid_meta[i]
-            chapter = meta.get("chapter", "Unknown")
-            progress = meta.get("progress_pct", 0.0)
-            
-            # Decode chunk if it is bytes
-            try:
-                text_chunk = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
-            except:
-                text_chunk = str(chunk)
-                
-            formatted_evidence.append(f"[{chapter} | {progress}%]\n{text_chunk}")
-            
-        return "\n---\n".join(formatted_evidence)
-
-    evidence_table = processed_results.select(
-        *pw.this,
-        evidence=combine_evidence(pw.this.final_chunks, pw.this.final_metadata, pw.this.book_name)
-    )
-    
-    # print("[DEBUG] Verification of evidence_table:")
-    # pw.debug.compute_and_print(evidence_table.select(pw.this.query_id, pw.this.book_name, pw.this.evidence))
-
-    # 5. Programmatic Reasoning (Hybrid Layer)
-    @pw.udf
-    def perform_programmatic_reasoning(backstory: str, chunks: list, metadata: list, target_book: str) -> str:
-        """
-        Executes deterministic consistency checks before LLM judging.
-        Returns a JSON string of detected conflicts.
-        """
-        # Filter chunks for this book first (same logic as combine_evidence)
-        valid_chunks = []
-        valid_meta = []
-        target_norm = target_book.lower().replace(" ", "_").replace(".txt", "").replace(".full", "")
-        
-        for i, chunk in enumerate(chunks):
-            meta = metadata[i] if i < len(metadata) else {}
-            # Handle Json objects from Pathway
-            if hasattr(meta, 'as_dict'): m_dict = meta.as_dict()
-            elif hasattr(meta, 'to_dict'): m_dict = meta.to_dict()
-            else: m_dict = dict(meta)
-            
-            p = str(m_dict.get("path", "")).lower().replace(" ", "_")
-            s = str(m_dict.get("source_file", "")).lower().replace(" ", "_")
-            
-            # print(f"[DEBUG] Checking chunk {i}: path={p} source={s} target={target_norm}", flush=True)
-            
-            if target_norm in p or target_norm in s:
-                valid_chunks.append(chunk)
-                valid_meta.append(m_dict)
-
-        # print(f"[DEBUG] Programmatic Reasoning: Filtered {len(valid_chunks)}/{len(chunks)} chunks for '{target_book}'")
-        if not valid_chunks:
-            return json.dumps({"conflicts": [], "summary": "No specific evidence for cross-referencing."})
-
-        # Initialize Reasoning Engine
         tracker = EntityStateTracker()
         validator = TimelineValidator()
         rules = ConstraintRules()
+        
+        # 1. Claims
+        from src.models.nli_judge import get_nlp
+        nlp = get_nlp()
+        doc = nlp(backstory)
+        backstory_claims = [sent.text for sent in doc.sents]
+        
+        # 2. Evidence
+        valid_chunks = [c.decode('utf-8') if isinstance(c, bytes) else str(c) for c in chunks]
+        narrative_states = []
+        for i, text in enumerate(valid_chunks):
+             meta = metadata[i] if metadata and i < len(metadata) else {}
+             try:
+                  chapter = dict(meta).get("chapter", "Unknown") if meta else "Unknown"
+             except: chapter = "Unknown"
+             narrative_states.append({"text": text, "chapter": chapter})
+             
+        # 3. Overlap
+        backstory_ents = tracker.extract_basic_entities(backstory)
+        bs_ents_list = backstory_ents.get("PERSON", []) + backstory_ents.get("GPE", []) + backstory_ents.get("LOC", [])
+        bs_proper_nouns = {w.lower() for w in bs_ents_list if len(w) > 3}
+        
+        evidence_text = " ".join(valid_chunks).lower()
+        overlap = any(noun in evidence_text for noun in bs_proper_nouns)
+        
+        all_conflicts = []
+        # Refined Overlap Check: Only flag if many entities and ZERO overlap
+        if len(bs_proper_nouns) >= 3 and not overlap and book_name:
+             all_conflicts.append(f"ZERO ENTITY OVERLAP: {list(bs_proper_nouns)[:3]}")
+        
+        all_conflicts.extend(validator.validate_location_consistency(backstory_claims, narrative_states))
+        all_conflicts.extend(rules.check_imprisonment_constraint(backstory_claims, narrative_states))
+        all_conflicts.extend(rules.check_death_constraint(backstory_claims, narrative_states))
 
-        # Extract States
-        narrative_states = tracker.get_states_from_chunks(valid_chunks, valid_meta)
-        backstory_claims = tracker.parse_backstory_claims(backstory)
+        verdict = "Contradictory" if all_conflicts else "Consistent"
+        return json.dumps({"verdict": verdict, "reason": " | ".join(all_conflicts[:2])})
+    except Exception as e:
+        return json.dumps({"verdict": "Consistent", "reason": f"Programmatic Error: {str(e)}"})
 
-        # Run Checks
-        conflicts = []
-        conflicts.extend(validator.validate_location_consistency(backstory_claims, narrative_states))
-        conflicts.extend(rules.check_imprisonment_constraint(backstory_claims, narrative_states))
-        conflicts.extend(rules.check_death_constraint(backstory_claims, narrative_states))
+@pw.udf
+def run_nli_evaluation(backstory: str, chunks: list, metadata: list, programmatic_results: str) -> tuple[str, str, str]:
+    import json
+    # 1. Programmatic Veto
+    try:
+         prog = json.loads(programmatic_results)
+         if prog.get("verdict") == "Contradictory":
+             if "ZERO ENTITY" not in prog.get("reason", ""):
+                return "Contradictory", "High", f"PROG-VETO: {prog.get('reason')}"
+    except: pass
 
-        return json.dumps({
-            "conflicts": conflicts,
-            "summary": f"Detected {len(conflicts)} potential factual conflicts." if conflicts else "No programmatic conflicts detected."
-        })
+    # 2. Format chunks for evaluation
+    try:
+        from src.models.nli_judge import evaluate_backstory_nli
+        formatted = []
+        for i, c in enumerate(chunks):
+             text = c.decode('utf-8') if isinstance(c, bytes) else str(c)
+             meta = metadata[i] if metadata and i < len(metadata) else {}
+             try: chapter = dict(meta).get("chapter", "Unknown") if meta else "Unknown"
+             except: chapter = "Unknown"
+             formatted.append({"text": text, "chapter": chapter})
 
-    # 5. Programmatic Reasoning DISABLED
-    reasoning_table = evidence_table.select(
+        # 3. NLI Evaluation (Atomic Claims)
+        status, rationale = evaluate_backstory_nli(backstory, formatted)
+        
+        # If NLI says consistent → trust it
+        if status == 1:
+            return "Consistent", "Medium", rationale
+            
+        # NLI flagged contradiction → verify with CoT LLM
+        from src.models.llm_judge import ConsistencyJudge, build_consistency_prompt
+        judge = ConsistencyJudge()
+        evidence_text = "\n".join([f"- [{f['chapter']}] {f['text'][:400]}" for f in formatted[:12]])
+        prompt = build_consistency_prompt(backstory, "Character", evidence_text, "")
+        res = judge.judge_single(prompt)
+        llm_label = res.get("label", 1)
+        llm_rationale = res.get("rationale", "")
+        
+        if llm_label == 0:
+            return "Contradictory", "Very High", f"NLI+LLM VERIFIED: {llm_rationale}"
+        else:
+            return "Consistent", "High", f"LLM OVERTURNED: {llm_rationale}"
+
+    except Exception as e:
+        return "Consistent", "Low", f"Pipeline error: {str(e)}"
+
+@pw.udf
+def parse_label(judgment: str) -> int:
+    return 0 if (judgment and judgment.lower() == "contradictory") else 1
+
+def run_pipeline():
+    # 1. Load Data
+    books_table = pw.io.fs.read(INPUT_BOOKS_DIR, format="binary", with_metadata=True)
+    
+    # 2. Extract Chapters (Simplified for speed)
+    @pw.udf
+    def extract_chapters_list(content: str) -> list[str]:
+        import re
+        try:
+            if isinstance(content, bytes):
+                text = content.decode('utf-8', errors='ignore')
+            else:
+                text = str(content)
+            
+            chapters = re.split(r'(?i)CHAPTER', text)
+            return [c.strip()[:5000] for c in chapters if c and len(c.strip()) > 50]
+        except Exception as e:
+            return []
+
+    # 2. Process books
+    flattened_books = books_table.select(
+        path=pw.this._metadata["path"],
+        chunks=extract_chapters_list(pw.this.data)
+    ).flatten(pw.this.chunks)
+    
+    # DEBUG: Write flattened
+    pw.io.csv.write(flattened_books, "debug_flattened.csv")
+    
+    @pw.udf
+    def normalize_book_name(name: str) -> str:
+        if not name: return ""
+        # Handle both full paths and raw names
+        base = str(name).split("/")[-1]
+        return base.lower().replace(".txt", "").strip().strip('"').strip("'").strip()
+
+    books_with_names = flattened_books.select(
+        text=pw.this.chunks,
+        book_norm=normalize_book_name(pw.this.path)
+    )
+    
+    # DEBUG: Write normalized books
+    pw.io.csv.write(books_with_names, "debug_books.csv")
+    
+    # 3. Load Train Data
+    train_schema = pw.schema_from_csv(INPUT_TRAIN_FILE)
+    # Force partitioned directory if present for better flushing
+    INCR_DATA = "Dataset/train_parts/"
+    actual_input = INCR_DATA if os.path.exists(INCR_DATA) else INPUT_TRAIN_FILE
+    
+    print(f"[DEBUG] Reading from: {actual_input}")
+    train_table = pw.io.csv.read(actual_input, schema=train_schema).rename(csv_id=pw.this.id)
+    
+    train_with_names = train_table.select(
+        story_id=pw.this.csv_id,
+        backstory=pw.this.content,
+        character=pw.this.char,
+        book_name=pw.this.book_name,
+        book_norm=normalize_book_name(pw.this.book_name)
+    )
+    
+    # DEBUG: Write normalized train data
+    pw.io.csv.write(train_with_names, "debug_train.csv")
+
+    # 4. Retrieval (Vector Search)
+    from src.pathway_pipeline.retrieval import NarrativeRetriever
+    retriever = NarrativeRetriever(books_dir=INPUT_BOOKS_DIR)
+
+    @pw.udf
+    def expand_query(character: str, backstory: str) -> str:
+        base = f"{character} {backstory}"
+        import re
+        words = re.findall(r'\b[A-Za-z]{5,}\b', backstory)
+        keywords = " ".join(words[:15]) if words else backstory
+        
+        # Conflict triggers
+        conflict_seeds = ""
+        back_lower = backstory.lower()
+        if any(w in back_lower for w in ["imprison", "jail", "cell", "prison", "arrest"]):
+            conflict_seeds = "confinement dungeon captive prisoner arrest"
+        elif any(w in back_lower for w in ["died", "death", "killed", "passed", "murder"]):
+            conflict_seeds = "deceased burial tomb funeral corpse"
+        elif "born" in back_lower or "birth" in back_lower:
+            conflict_seeds = "parents childhood origin ancestry"
+
+        return f"{base} {keywords} {conflict_seeds}"
+
+    query_table = train_with_names.select(
         *pw.this,
-        programmatic_results=pw.apply(lambda x: "", pw.this.backstory) # Return empty string
+        query=expand_query(pw.this.character, pw.this.backstory)
     )
 
-    # 6. Consistency Judgment
-    # Updated build_consistency_prompt could take programmatic results
-    prompt_table = reasoning_table.select(
+    @pw.udf
+    def calculate_adaptive_k(backstory: str) -> int:
+        # Increase k to 50 to give the NLI Reranker more material to work with
+        return 50
+
+    # Vector search instead of simple join
+    joined_table = retriever.retrieve(
+        query_table, 
+        k=calculate_adaptive_k(query_table.backstory)
+    ).select(
+        story_id=pw.this.story_id,
+        backstory=pw.this.backstory,
+        character=pw.this.character,
+        book_name=pw.this.book_name,
+        chunks=pw.this.retrieved_chunks,
+        metadata=pw.this.retrieved_metadata
+    )
+    
+    # DEBUG: Write joined rows
+    pw.io.csv.write(joined_table, "debug_joined.csv")
+
+    # 5. Reasoning
+    reasoning_table = joined_table.select(
         *pw.this,
-        prompt=build_consistency_prompt(
-            backstory=pw.this.backstory,
-            character=pw.this.character,
-            evidence=pw.this.evidence,
-            programmatic_analysis=pw.this.programmatic_results
+        programmatic_results=perform_programmatic_reasoning(
+            pw.this.backstory,
+            pw.this.chunks,
+            pw.this.metadata,
+            pw.this.book_name
         )
     )
 
-    # print("[DEBUG] Verification of prompt_table:")
-    # pw.debug.compute_and_print(prompt_table.select(pw.this.query_id, pw.this.prompt))
-
-    # Run LLM (Dual-Pass + Determinism)
-    # 6. Judicial Reasoning
-    final_reasoning = judge.judge(prompt_table)
-
-    @pw.udf
-    def extract_judgment_and_confidence(llm_response: str) -> tuple:
-        """
-        Parses LLM response for Result, Confidence, and Rationale.
-        Now expects JSON format: {"label": 0/1, "rationale": "..."}
-        """
-        try:
-            clean_json = llm_response
-            if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0]
-            data = json.loads(clean_json)
-            
-            label = data.get("label", 1)
-            res = "Contradictory" if label == 0 else "Consistent"
-            rat = data.get("rationale", llm_response)
-            return res, "High", rat
-        except:
-            # Fallback for non-JSON or weird formats
-            response = llm_response.lower()
-            res = "Consistent"
-            if "contradictory" in response or '"label": 0' in response:
-                res = "Contradictory"
-            return res, "Low", llm_response
-
-    judged_table = final_reasoning.select(
+    judged_table = reasoning_table.select(
         *pw.this,
-        judgment_data=extract_judgment_and_confidence(pw.this.result)
+        judgment_data=run_nli_evaluation(
+            pw.this.backstory,
+            pw.this.chunks,
+            pw.this.metadata,
+            pw.this.programmatic_results
+        )
     ).select(
         *pw.this,
         judgment=pw.this.judgment_data[0],
@@ -374,66 +258,35 @@ def main():
         rationale=pw.this.judgment_data[2]
     )
 
-    # 7. Output Generation
-    @pw.udf
-    def parse_label(judgment: str) -> int:
-        return 0 if judgment.lower() == "contradictory" else 1
-
+    # 6. Final Output
     output_table = judged_table.select(
-        **{"Story ID": pw.this.query_id},
+        **{"Story ID": pw.this.story_id},
         Prediction=parse_label(pw.this.judgment),
         Rationale=pw.this.rationale,
         Confidence=pw.this.confidence
     )
 
-    # Export to CSV
-    pw.io.csv.write(output_table, OUTPUT_FILE)
-    print(f"[DEBUG] CSV Write scheduled to {OUTPUT_FILE}...")
-    
-    # Pathway runs everything as a compute graph
-    print("[DEBUG] Starting pw.run()...", flush=True)
-    pw.run()
-    print("[DEBUG] pw.run() finished.", flush=True)
-    
-    # Post-processing: Clean up Pathway's internal columns (time, diff)
-    try:
-        import csv
-        cleaned_rows = []
-        with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            try:
-                header = next(reader)
-            except StopIteration:
-                print("[WARNING] results.csv is empty.")
-                return
-
-            col_map = {col: i for i, col in enumerate(header)}
-            
-            for row in reader:
-                if not row: continue
-                try:
-                    # Robust column mapping
-                    idx_id = col_map.get("Story ID", col_map.get("Story_ID", 0))
-                    idx_pred = col_map.get("Prediction", 1)
-                    idx_rat = col_map.get("Rationale", 2)
-                    idx_conf = col_map.get("Confidence", 3)
-                    
-                    story_id = row[idx_id]
-                    pred = row[idx_pred]
-                    rat = row[idx_rat]
-                    conf = row[idx_conf]
-                    cleaned_rows.append([story_id, pred, rat, conf])
-                except (IndexError, KeyError):
-                    continue
+    # 7. Write and Run (incremental if INPUT_DATA is directory)
+    if os.path.exists(OUTPUT_FILE):
+        if os.path.isfile(OUTPUT_FILE): os.remove(OUTPUT_FILE)
+        else: import shutil; shutil.rmtree(OUTPUT_FILE)
         
-        if cleaned_rows:
-            df = pd.DataFrame(cleaned_rows, columns=["Story ID", "Prediction", "Rationale", "Confidence"])
-            df.to_csv(OUTPUT_FILE, index=False)
-            print(f"[INFO] Cleaned CSV output: {len(df)} predictions written to {OUTPUT_FILE}")
-        else:
-            print("[WARNING] No valid rows found in CSV.")
+    pw.io.csv.write(output_table, OUTPUT_FILE)
+    print(f"[DEBUG] Starting Pipeline execution (incremental mode)...")
+    
+    pw.run()
+    
+    # post-process for clean CSV
+    try:
+        if os.path.exists(OUTPUT_FILE):
+             # Filter Pathway internal cols
+             df = pd.read_csv(OUTPUT_FILE)
+             cols = ["Story ID", "Prediction", "Rationale", "Confidence"]
+             final_df = df[[c for c in cols if c in df.columns]]
+             final_df.to_csv(OUTPUT_FILE, index=False)
+             print(f"[SUCCESS] Results written to {OUTPUT_FILE}")
     except Exception as e:
-        print(f"[WARNING] Could not clean CSV: {e}")
+        print(f"[ERROR] Post-processing failed: {e}")
 
 if __name__ == "__main__":
-    main()
+    run_pipeline()

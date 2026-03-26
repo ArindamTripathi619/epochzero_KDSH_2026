@@ -45,7 +45,9 @@ class NarrativeRetriever:
             
             # Simple heuristic chapter splitting (Standard in Gutenberg/Novel formats)
             # Improved to handle CRLF (\r\n) and optional formatting
-            chapter_pattern = r"(?i)^\s*(CHAPTER|PART|BOOK)\s+[IVXLCDM\d]+.*$"
+            # Enhanced heuristic chapter splitting
+            # Handles CHAPTER, Chapter, PART, Part, BOOK, Book with Roman/Arabic numerals
+            chapter_pattern = r"(?i)^\s*(CHAPTER|PART|BOOK|Chapter|Part|Book)\s+([IVXLCDM\d]+|[A-Z]+).*$"
             matches = list(re.finditer(chapter_pattern, text, re.MULTILINE))
             
             if not matches:
@@ -116,7 +118,7 @@ class NarrativeRetriever:
         # 2. Setup Indexing Components
         self.embedder = SentenceTransformerEmbedder(model=embedder_model)
         self.retriever_factory = BruteForceKnnFactory(embedder=self.embedder)
-        self.text_splitter = TokenCountSplitter(min_tokens=200, max_tokens=600, encoding_name="cl100k_base")
+        self.text_splitter = TokenCountSplitter(min_tokens=200, max_tokens=800, encoding_name="cl100k_base")
         self.parser = ParseUtf8()
 
         # 3. Create Document Store
@@ -130,16 +132,23 @@ class NarrativeRetriever:
 
     def retrieve(self, queries_table: pw.Table, k: int = 20):
         """
-        Retrieves relevant book chunks using lower-level query_as_of_now.
+        Retrieves relevant book chunks using the documented Pathway
+        query_as_of_now pattern with collapse_rows=True (default).
+        
+        With collapse_rows=True, results are already aggregated into tuples
+        per query — no groupby needed.
         """
-        # index = self.store._retriever
-        # Direct access to the internal retriever to use query_as_of_now
-        results = self.store._retriever.query_as_of_now(queries_table.query, k)
-
-        return queries_table + results.select(
-            retrieved_chunks=pw.this.text,
-            retrieved_metadata=pw.this.metadata
+        # query_as_of_now returns AsofNowJoinResult with tuples (collapse_rows=True)
+        # Use + operator to merge with query table, then .select() to extract
+        joined = queries_table + self.store._retriever.query_as_of_now(
+            queries_table.query,
+            number_of_matches=k,
+        ).select(
+            retrieved_chunks=pw.coalesce(pw.right.text, ()),
+            retrieved_metadata=pw.coalesce(pw.right.metadata, ()),
         )
+        return joined
 
+    
 if __name__ == "__main__":
     print("NarrativeRetriever module initialized.")
