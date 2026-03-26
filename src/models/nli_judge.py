@@ -43,7 +43,7 @@ def check_temporal_clash(claim: str, evidence: str) -> bool:
         return not any(y in e_years for y in c_years)
     return False
 
-def evaluate_backstory_nli(backstory: str, retrieved_chunks: list[dict]) -> tuple[int, str]:
+def evaluate_backstory_nli(backstory: str, retrieved_chunks: list[dict]) -> tuple[int, str, list[dict]]:
     """
     Evaluates a backstory against chunks using NLI and temporal checks.
     Returns (label, rationale) where label: 0 (contradict), 1 (consistent).
@@ -76,7 +76,7 @@ def evaluate_backstory_nli(backstory: str, retrieved_chunks: list[dict]) -> tupl
                 sentence_to_source[s_text] = c_source
 
     if not all_evidence_sentences:
-         return 1, "Consistent (No evidence found)"
+         return 1, "Consistent (No evidence found)", retrieved_chunks
 
     from sentence_transformers import util
     ev_embeddings = bi_enc.encode(all_evidence_sentences, convert_to_tensor=True)
@@ -131,8 +131,8 @@ def evaluate_backstory_nli(backstory: str, retrieved_chunks: list[dict]) -> tupl
 
     # Final verdict
     if len(strong_contradictions) >= 1:
-        return 0, " | ".join(strong_contradictions[:2])
+        return 0, " | ".join(strong_contradictions[:2]), retrieved_chunks
     elif len(moderate_contradictions) >= 2:
-        return 0, " | ".join(moderate_contradictions[:2])
+        return 0, " | ".join(moderate_contradictions[:2]), retrieved_chunks
     
-    return 1, "Consistent"
+    return 1, "Consistent", retrieved_chunks

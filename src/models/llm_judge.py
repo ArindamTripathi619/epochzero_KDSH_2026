@@ -21,7 +21,7 @@ YOUR TASK:
 Determine if the Backstory CONTRADICTS the established events in the novel.
 
 INPUTS:
-1. Character: {character}
+1. Character: {character} (Note: metadata may be generic; focus on the provided backstory).
 2. Hypothetical Backstory: {backstory}
 3. Evidence Excerpts (with temporal metadata):
 {evidence}
@@ -73,10 +73,10 @@ class ConsistencyJudge:
         if verdict_match:
             verdict = verdict_match.group(1)
             label = 0 if "CONTRADICT" in verdict else 1
-            return {"label": label, "rationale": text.strip()[:500]}
+            return {"label": label, "rationale": text.strip()[:600]}
         
         # Fallback: scan for strong indicators in the last 200 chars (conclusion area)
-        conclusion = text_upper[-300:]
+        conclusion = text_upper[-400:]
         
         contradict_signals = ["CONTRADICTS", "CONTRADICTORY", "INCONSISTENT", "IS A CONTRADICTION", 
                               "DIRECTLY CONFLICTS", "DOES CONTRADICT", "FUNDAMENTALLY CONFLICTS"]
@@ -94,7 +94,7 @@ class ConsistencyJudge:
             # Ultimate fallback: default to consistent (conservative)
             label = 1
         
-        return {"label": label, "rationale": text.strip()[:500]}
+        return {"label": label, "rationale": text.strip()[:600]}
 
     def judge_single(self, prompt: str) -> dict:
         """Atomic judge call — lets LLM reason freely, then parses verdict."""

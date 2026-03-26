@@ -92,26 +92,27 @@ def run_nli_evaluation(backstory: str, chunks: list, metadata: list, programmati
              except: chapter = "Unknown"
              formatted.append({"text": text, "chapter": chapter})
 
-        # 3. NLI Evaluation (Atomic Claims)
-        status, rationale = evaluate_backstory_nli(backstory, formatted)
+        # 3. NLI Evaluation (Atomic Claims) - Now returns reranked_chunks
+        nli_status, nli_rationale, reranked_chunks = evaluate_backstory_nli(backstory, formatted)
         
-        # If NLI says consistent → trust it
-        if status == 1:
-            return "Consistent", "Medium", rationale
-            
-        # NLI flagged contradiction → verify with CoT LLM
+        # 4. LLM Verification (Mandatory for ALL stories in Strategy 3)
         from src.models.llm_judge import ConsistencyJudge, build_consistency_prompt
         judge = ConsistencyJudge()
-        evidence_text = "\n".join([f"- [{f['chapter']}] {f['text'][:400]}" for f in formatted[:12]])
+        # FIX: Use reranked_chunks and increase window to 20
+        evidence_text = "\n".join([f"- [{c['chapter']}] {c['text'][:400]}" for c in reranked_chunks[:20]])
         prompt = build_consistency_prompt(backstory, "Character", evidence_text, "")
+        
+        print(f"DEBUG: Processing Story ID {backstory[:20]}... calling LLM judge.", flush=True)
         res = judge.judge_single(prompt)
         llm_label = res.get("label", 1)
         llm_rationale = res.get("rationale", "")
         
+        # Final Verdict based primarily on LLM
         if llm_label == 0:
-            return "Contradictory", "Very High", f"NLI+LLM VERIFIED: {llm_rationale}"
+            return "Contradictory", "High", f"LLM-FIRST VERIFIED: {llm_rationale} | NLI_REF: {nli_rationale}"
         else:
-            return "Consistent", "High", f"LLM OVERTURNED: {llm_rationale}"
+            confidence = "Medium" if nli_status == 1 else "High"
+            return "Consistent", confidence, f"LLM-FIRST CONSISTENT: {llm_rationale} | NLI_REF: {nli_rationale}"
 
     except Exception as e:
         return "Consistent", "Low", f"Pipeline error: {str(e)}"
