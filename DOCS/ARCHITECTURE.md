@@ -10,11 +10,11 @@ graph TD
     B --> C[Sentence Chunking & Vector Store]
     
     A --> D[Evaluation Stage]
-    D --> E[Reranking cross-encoder/ms-marco-MiniLM-L-6-v2]
-    E --> F[Top 20 Reranked Evidence Chunks]
+    D --> E["Reranking cross-encoder/ms-marco-MiniLM-L-6-v2"]
+    E --> F["Top 20 Reranked Evidence Chunks"]
     
-    F --> G[DeepSeek R1 reasoning (70B)]
-    G --> H[Final Verdict: CONSISTENT or CONTRADICTORY]
+    F --> G["DeepSeek R1 reasoning (70B)"]
+    G --> H["Final Verdict: CONSISTENT or CONTRADICTORY"]
 ```
 
 ## Key Components
