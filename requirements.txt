@@ -1,8 +1,8 @@
-pathway[xpack-llm-local,xpack-llm-docs]==0.9.0
-pathway-llm-app
-sentence-transformers==2.2.2
-torch
-transformers
+pathway
+sentence-transformers
 pandas
 python-dotenv
-spacy
+openai
+requests
+litellm
+pydantic<2.10

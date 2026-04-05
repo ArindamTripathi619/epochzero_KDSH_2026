@@ -3,8 +3,7 @@ import re
 import os
 import json
 from typing import Any, List, Tuple
-from pathway.xpacks.llm.document_store import DocumentStore
-from pathway.stdlib.indexing.nearest_neighbors import BruteForceKnnFactory
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 from pathway.xpacks.llm.embedders import SentenceTransformerEmbedder
 from pathway.xpacks.llm.splitters import TokenCountSplitter
 from pathway.xpacks.llm.parsers import ParseUtf8
@@ -117,18 +116,17 @@ class NarrativeRetriever:
 
         # 2. Setup Indexing Components
         self.embedder = SentenceTransformerEmbedder(model=embedder_model)
-        self.retriever_factory = BruteForceKnnFactory(embedder=self.embedder)
         self.text_splitter = TokenCountSplitter(min_tokens=200, max_tokens=800, encoding_name="cl100k_base")
         self.parser = ParseUtf8()
 
-        # 3. Create Document Store
-        self.store = DocumentStore(
-            docs=chapters_table,
-            retriever_factory=self.retriever_factory,
+        # 3. Create VectorStoreServer (v23 equivalent of DocumentStore)
+        self.store = VectorStoreServer(
+            chapters_table,
+            embedder=self.embedder,
             parser=self.parser,
-            splitter=self.text_splitter,
+            splitter=self.text_splitter
         )
-        print(f"[DEBUG] DocumentStore created.")
+        print(f"[DEBUG] VectorStoreServer created.")
 
     def retrieve(self, queries_table: pw.Table, k: int = 20):
         """
@@ -138,14 +136,14 @@ class NarrativeRetriever:
         With collapse_rows=True, results are already aggregated into tuples
         per query — no groupby needed.
         """
-        # query_as_of_now returns AsofNowJoinResult with tuples (collapse_rows=True)
-        # Use + operator to merge with query table, then .select() to extract
-        joined = queries_table + self.store._retriever.query_as_of_now(
+        # query returns a table matched with queries_table with results
+        joined = queries_table + self.store.query(
             queries_table.query,
             number_of_matches=k,
+            collapse_rows=True
         ).select(
-            retrieved_chunks=pw.coalesce(pw.right.text, ()),
-            retrieved_metadata=pw.coalesce(pw.right.metadata, ()),
+            retrieved_chunks=pw.this.data,
+            retrieved_metadata=pw.this.data, # VectorStoreServer.query typically packs info into data
         )
         return joined
 

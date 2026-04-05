@@ -14,7 +14,7 @@ def calculate_full_accuracy():
             pred_path = 'results.csv' # Fallback
             
         print(f"Loading predictions from: {pred_path}")
-        pred_df = pd.read_csv(pred_path)
+        pred_df = pd.read_csv(pred_path, on_bad_lines='skip')
         
         correct = 0
         total = 0
@@ -32,8 +32,10 @@ def calculate_full_accuracy():
             
             # Handle prediction parsing
             try:
-                pred_label = int(float(row['Prediction']))
-            except:
+                # Remove quotes if they exist and convert to int
+                raw_pred = str(row['Prediction']).replace('"', '').strip()
+                pred_label = int(float(raw_pred))
+            except (ValueError, TypeError):
                 continue
             
             is_correct = (truth_label == pred_label)

@@ -1,3 +1,20 @@
+try:
+    import beartype
+    from unittest.mock import MagicMock
+    import sys
+    # Bypass beartype decorators and roar exceptions for Python 3.14 compatibility
+    mock_beartype = MagicMock()
+    mock_beartype.beartype = lambda x: x  # Identity decorator
+    sys.modules['beartype'] = mock_beartype
+    
+    mock_roar = MagicMock()
+    # Define the specific exception Pathway expects
+    class BeartypeDecorHintNonpepException(Exception): pass
+    mock_roar.BeartypeDecorHintNonpepException = BeartypeDecorHintNonpepException
+    sys.modules['beartype.roar'] = mock_roar
+except ImportError:
+    pass
+
 import pathway as pw
 import pandas as pd
 import os
@@ -7,7 +24,7 @@ from typing import List, Dict, Tuple
 
 # Configuration
 INPUT_BOOKS_DIR = "Dataset/Books/"
-INPUT_TRAIN_FILE = "Dataset/train.csv"
+INPUT_TRAIN_FILE = "Dataset/train_fixed.csv"
 OUTPUT_FILE = "results.csv"
 
 # Global entities/tracker imports for top-level if needed (though we rely on UDF internal imports)
@@ -95,12 +112,34 @@ def run_nli_evaluation(backstory: str, chunks: list, metadata: list, programmati
         # 3. NLI Evaluation (Atomic Claims) - Now returns reranked_chunks
         nli_status, nli_rationale, reranked_chunks = evaluate_backstory_nli(backstory, formatted)
         
+        # Strategy 3: Mini Plot-Map Summarization
+        plot_summary = ""
+        try:
+             plot_summary_prompt = "Write a 500-word plot summary of the events described in these chunks. Include Key character arcs, Major timeline anchors, and Central causal events:\n\n"
+             for c in formatted[:30]:
+                  plot_summary_prompt += f"[{c['chapter']}] {c['text'][:300]}\n"
+
+             import requests, os
+             from dotenv import load_dotenv
+             load_dotenv()
+             apiKey = os.environ.get("OPENAI_API_KEY", "sk-dummy")
+             res = requests.post(
+                 "http://localhost:8000/v1/chat/completions",
+                 json={"model": "groq-scout", "messages": [{"role": "user", "content": plot_summary_prompt}]},
+                 headers={"Authorization": f"Bearer {apiKey}"},
+                 timeout=20
+             )
+             if res.status_code == 200:
+                  plot_summary = res.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+             print(f"DEBUG: Plot summary failed: {e}")
+
         # 4. LLM Verification (Mandatory for ALL stories in Strategy 3)
         from src.models.llm_judge import ConsistencyJudge, build_consistency_prompt
         judge = ConsistencyJudge()
         # FIX: Use reranked_chunks and increase window to 20
         evidence_text = "\n".join([f"- [{c['chapter']}] {c['text'][:400]}" for c in reranked_chunks[:20]])
-        prompt = build_consistency_prompt(backstory, "Character", evidence_text, "")
+        prompt = build_consistency_prompt(backstory, "Character", evidence_text, "", plot_summary)
         
         print(f"DEBUG: Processing Story ID {backstory[:20]}... calling LLM judge.", flush=True)
         res = judge.judge_single(prompt)
@@ -189,45 +228,90 @@ def run_pipeline():
     retriever = NarrativeRetriever(books_dir=INPUT_BOOKS_DIR)
 
     @pw.udf
-    def expand_query(character: str, backstory: str) -> str:
-        base = f"{character} {backstory}"
-        import re
-        words = re.findall(r'\b[A-Za-z]{5,}\b', backstory)
-        keywords = " ".join(words[:15]) if words else backstory
-        
-        # Conflict triggers
-        conflict_seeds = ""
-        back_lower = backstory.lower()
-        if any(w in back_lower for w in ["imprison", "jail", "cell", "prison", "arrest"]):
-            conflict_seeds = "confinement dungeon captive prisoner arrest"
-        elif any(w in back_lower for w in ["died", "death", "killed", "passed", "murder"]):
-            conflict_seeds = "deceased burial tomb funeral corpse"
-        elif "born" in back_lower or "birth" in back_lower:
-            conflict_seeds = "parents childhood origin ancestry"
+    def decompose_claims(backstory: str) -> list[str]:
+        import requests, os, json, re
+        from dotenv import load_dotenv
+        load_dotenv()
+        API_BASE = "http://localhost:8000/v1"
+        DUMMY_KEY = os.environ.get("OPENAI_API_KEY", "sk-dummy")
+        prompt = f"Decompose this backstory into 5 to 8 atomic, standalone claims. Return ONLY a JSON list of strings.\nBackstory: {backstory}"
+        try:
+            res = requests.post(
+                f"{API_BASE}/chat/completions",
+                 json={"model": "groq-llama-small", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0},
+                 headers={"Authorization": f"Bearer {DUMMY_KEY}"},
+                 timeout=15
+            )
+            if res.status_code == 200:
+                content = res.json()["choices"][0]["message"]["content"]
+                match = re.search(r'\[.*\]', content, re.DOTALL)
+                if match:
+                    claims = json.loads(match.group(0))
+                    if isinstance(claims, list) and len(claims) > 0:
+                        return [str(c) for c in claims]
+        except Exception as e:
+            print(f"DEBUG: Claim decomposition failed: {e}")
+        return [backstory]
 
-        return f"{base} {keywords} {conflict_seeds}"
-
-    query_table = train_with_names.select(
+    query_table_lists = train_with_names.select(
         *pw.this,
-        query=expand_query(pw.this.character, pw.this.backstory)
+        claims=decompose_claims(pw.this.backstory)
+    )
+
+    flat_queries = query_table_lists.flatten(pw.this.claims).select(
+        *pw.this,
+        single_claim=pw.this.claims
     )
 
     @pw.udf
     def calculate_adaptive_k(backstory: str) -> int:
-        # Increase k to 50 to give the NLI Reranker more material to work with
-        return 50
+        return 20  # 20 chunks per claim
 
-    # Vector search instead of simple join
-    joined_table = retriever.retrieve(
-        query_table, 
-        k=calculate_adaptive_k(query_table.backstory)
+    # Vector search per claim
+    joined_flat = retriever.retrieve(
+        flat_queries.select(
+            pw.this.story_id, 
+            pw.this.backstory, 
+            pw.this.character, 
+            pw.this.book_name, 
+            query=pw.this.single_claim
+        ), 
+        k=20
+    )
+
+    grouped_table = joined_flat.groupby(pw.this.story_id).reduce(
+        story_id=pw.this.story_id,
+        backstory=pw.reducers.min(pw.this.backstory),
+        character=pw.reducers.min(pw.this.character),
+        book_name=pw.reducers.min(pw.this.book_name),
+        metadata_tup=pw.reducers.tuple(pw.this.retrieved_metadata),
+        chunks_tup=pw.reducers.tuple(pw.this.retrieved_chunks)
+    )
+
+    @pw.udf
+    def flatten_retrieved(nested_chunks: tuple, nested_metadata: tuple) -> tuple[list, list]:
+         flat_c, flat_m = [], []
+         seen = set()
+         for t_c, t_m in zip(nested_chunks, nested_metadata):
+              if t_c and t_m:
+                  for c, m in zip(t_c, t_m):
+                       c_str = c.decode('utf-8') if isinstance(c, bytes) else str(c)
+                       if c_str not in seen:
+                            seen.add(c_str)
+                            flat_c.append(c)
+                            flat_m.append(m)
+         return flat_c, flat_m
+
+    joined_table = grouped_table.select(
+        *pw.this,
+        flat_results=flatten_retrieved(pw.this.chunks_tup, pw.this.metadata_tup)
     ).select(
         story_id=pw.this.story_id,
         backstory=pw.this.backstory,
         character=pw.this.character,
         book_name=pw.this.book_name,
-        chunks=pw.this.retrieved_chunks,
-        metadata=pw.this.retrieved_metadata
+        metadata=pw.this.flat_results[1],
+        chunks=pw.this.flat_results[0]
     )
     
     # DEBUG: Write joined rows
