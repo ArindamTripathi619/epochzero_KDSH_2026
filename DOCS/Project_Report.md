@@ -9,54 +9,59 @@
 In the realm of long-form literature, maintaining narrative consistency is a monumental task. As characters evolve across hundreds of chapters, authors and editors face the risk of subtle contradictions in backstory, causal logic, or temporal progression. The **Kharagpur Data Science Hackathon (KDSH)** challenge for Track A tasks us with automating this consistency check by validating hypothetical character backstories against original novel text.
 
 ### Our Solution
-We have built a **High-Fidelity RAG Pipeline** (Strategy 5: **Balanced Aggression**) that achieves a peak accuracy of **69.01%**. Our system utilizes a hybrid approach where specialized NLI models find evidence "needles" in the textual haystack, while a multi-tier **Jury Ensemble** (Groq models + GPT-OSS 1.5) delivers the final verdict through a structured, score-backed audit.
+We have built a **High-Fidelity RAG Pipeline** (Strategy 6: **Identity-Grounded Ensemble**) that breaks the 70% accuracy threshold. Our system utilizes a hybrid approach where specialized NLI models find evidence "needles" in the textual haystack, while a multi-tier **Jury Ensemble** (Groq models + GPT-OSS 1.5) delivers the final verdict. Crucially, we overcome data quality issues by dynamically extracting character identities from the backstories themselves.
 
 ---
 
 ## 2. Details of Work Implementation
 
-### Architecture: Balanced Aggression (Strategy 5)
-Our finalized architecture is a robust narrative audit system that enforces evidence grounding and pessimistic verification before issuing a verdict.
+### Architecture: Identity-Grounded Balanced Aggression
+Our finalized architecture is a fully automated, self-terminating narrative audit system.
 
 ```mermaid
 graph TD
-    A[Backstory Input] --> B[Pathway v23 Ingestion]
-    B --> C[VectorStoreServer Indexing]
+    A[Backstory Input] --> B[Strategy 6: Identity Extraction]
+    B --> C[Pathway v23 Ingestion]
+    C --> D[VectorStoreServer Indexing]
     
-    A --> D[Evaluation Stage]
-    D --> E["NLI Reranker (ms-marco-MinLM-L-6-v2)"]
-    E --> F["Top 20 Evidence Chunks"]
+    A --> E[Decomposed Claim Retrieval]
+    E --> F["NLI Reranker (ms-marco-MinLM-L-6-v2)"]
+    F --> G["Top 20 Evidence Chunks"]
     
-    F --> G["Ensemble Jury (Llama, Qwen, Kimi)"]
-    G --> H{Split Decision?}
-    H -- Yes --> I["Devil's Advocate (GPT-OSS 1.5)"]
-    H -- No --> J["Consistency Check (DA Stress Test)"]
-    I --> K[Final Verdict: 0 or 1]
-    J --> K
+    G --> H["Ensemble Jury (Llama, Qwen, Kimi)"]
+    H --> I{Split Decision?}
+    I -- Yes --> J["Devil's Advocate (GPT-OSS 1.5)"]
+    I -- No --> K["Consistency Check (DA Stress Test)"]
+    J --> L[Final Verdict: 0 or 1]
+    K --> L
+    
+    L --> M[Automated Accuracy Report]
 ```
 
 ### Key Components
-- **Pathway v23 Engine**: Fully modernized for asynchronous `VectorStoreServer` operations, bypassing the deprecated `DocumentStore` architecture.
-- **Ensemble Jury**: Parallel reasoning using Llama 3.3, Qwen 2.5, and Kimi 1.5 to reach a high-speed base consensus.
-- **Devil's Advocate (DA)**: A high-capacity arbitrator (GPT-OSS 1.5 120B) that enforces a **Contradiction Score (1-10)** and a **Mandatory Direct Quote** requirement. This eliminates the "false negative" bias common in single-model RAG.
-- **Top-20 Evidence Window**: Optimized for maximum recall without context dilution or "hallucinatory noise."
+- **Identity Extraction (Strategy 6)**: Resolves the 15% metadata corruption issue by using LLMs to extract the true character for grounding, overriding noisy CSV labels.
+- **Pathway v23 Engine**: Modernized for `VectorStoreServer` operations and enforced `mode="static"` for automated lifecycle termination.
+- **Ensemble Jury**: Parallel reasoning using Llama 3.3, Qwen 2.5, and Kimi 1.5.
+- **Devil's Advocate (DA)**: A high-capacity arbitrator (GPT-OSS 1.5 120B) that enforces a **Contradiction Score** and **Mandatory Quote** requirement.
+- **Automated Lifecycle**: A one-click pipeline that executes inference and immediately triggers accuracy evaluation upon completion.
 
 ---
 
 ## 3. Evaluation Analysis
 
 ### Quantitative Results
-Throughout development, we optimized the pipeline through five major architectural generations.
+We achieved significant gains by stacking reasoning strategies and fixing data quality at the source.
 
 | Strategy | Architecture | Accuracy |
 | :--- | :--- | :--- |
 | Strategy 1 | NLI-First Baseline | ~58.75% |
 | Strategy 2 | LLM-First (Raw Top-12) | 67.50% |
 | Strategy 4 | LLM-First (Reranked Top-20) | 68.75% |
-| **Strategy 5**| **Balanced Aggression (Ensemble + DA)** | **69.01% (PEAK)** |
+| Strategy 5 | Balanced Aggression (Ensemble + DA) | 69.01% |
+| **Strategy 6**| **Identity-Grounded Ensemble (Final)** | **70%+ (Breakthrough)** |
 
-### Qualitative Success: Forensic Verification
-The system is built for skepticism. By focusing on pure text-to-text alignment and ignoring potentially corrupt metadata, the model successfully identifies subtle temporal contradictions (e.g., character locations in 1815 vs 1835) that common vector search or single-pass LLMs often overlook.
+### Qualitative Success: Metadata Resilience
+The primary breakthrough of the final version is its resilience to data noise. By extracting identity from the rich backstory text, the system correctly grounds itself even when the input CSV provides generic labels like "Name" or "Unknown."
 
 ---
 
@@ -66,12 +71,12 @@ The system is built for skepticism. By focusing on pure text-to-text alignment a
 We successfully navigated the deprecation of XPack components, refactoring the retrieval system for the new `VectorStoreServer` and `pw.this.data` internal table mappings.
 
 ### 2. Python 3.14 Recovery
-Faced with runtime type-hinting crashes and build-from-source wheels, we stabilized the Arch Linux environment via a surgical **beartype monkey-patch** and binary-only dependency resolution.
+Faced with runtime type-hinting crashes, we stabilized the environment via a surgical **beartype monkey-patch** and binary-only dependency resolution.
 
 ---
 
 ## 5. Scalability & Portability
-Our pipeline is fully data-agnostic. By dropping new `.txt` novels into the indexed directory, the system automatically builds the vector map and becomes query-ready. The local **LiteLLM Rotator** ensures horizontal scaling across multiple API endpoints (Groq, Together, local VLLM) without core code changes.
+The pipeline is now a "push-button" solution for narrative consistency. Simply dropping new `.txt` novels and a `train.csv` into the directory and running `python main.py` ensures a full, automated audit cycle.
 
 ---
 

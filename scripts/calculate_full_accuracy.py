@@ -1,29 +1,53 @@
 import pandas as pd
 import os
 
-def calculate_full_accuracy():
+def calculate_full_accuracy(pred_path='results.csv', truth_path='Dataset/train.csv'):
+    """Calculate accuracy between predictions and ground truth."""
     try:
+        if not os.path.exists(truth_path):
+             # Try alternate path if not found
+             truth_path = 'Dataset/train_fixed.csv'
+             
         # Load Ground Truth
-        truth_df = pd.read_csv('Dataset/train.csv')
+        truth_df = pd.read_csv(truth_path)
         # Map id -> label (Standard: 1=Consistent, 0=Contradict)
-        truth_map = {str(row['id']): (1 if row['label'] == 'consistent' else 0) for _, row in truth_df.iterrows()}
+        # Handle different potential column names ('id' vs 'ID', 'label' vs 'Label')
+        id_col = 'id' if 'id' in truth_df.columns else 'ID'
+        label_col = 'label' if 'label' in truth_df.columns else 'Label'
+        
+        truth_map = {}
+        for _, row in truth_df.iterrows():
+            sid = str(row[id_col])
+            val = row[label_col]
+            # Convert string label to int
+            if isinstance(val, str):
+                label = 1 if val.lower() == 'consistent' else 0
+            else:
+                label = int(val)
+            truth_map[sid] = label
         
         # Load Predictions
-        pred_path = 'results_final_standardized.csv'
         if not os.path.exists(pred_path):
-            pred_path = 'results.csv' # Fallback
+            print(f"Error: Prediction file {pred_path} not found.")
+            return None
             
+        print(f"\n--- Automated Accuracy Report ---")
         print(f"Loading predictions from: {pred_path}")
+        # Preds from Pathway might have internal columns; read only necessary ones
         pred_df = pd.read_csv(pred_path, on_bad_lines='skip')
         
         correct = 0
         total = 0
         
-        print(f"{'Story ID':<10} {'Truth':<12} {'Pred':<10} {'Result'}")
-        print("-" * 45)
+        headers = f"{'Story ID':<10} {'Truth':<12} {'Pred':<10} {'Result'}"
+        print(headers)
+        print("-" * len(headers))
 
         for _, row in pred_df.iterrows():
-            sid = str(row['Story ID'] if 'Story ID' in row else row['id'])
+            # Support both 'Story ID' and 'id'
+            sid_key = 'Story ID' if 'Story ID' in row else 'id'
+            if sid_key not in row: continue
+            sid = str(row[sid_key])
                 
             if sid not in truth_map:
                 continue
@@ -49,15 +73,23 @@ def calculate_full_accuracy():
             print(f"{sid:<10} {t_str:<12} {p_str:<10} {status}")
             
         if total == 0:
-            print("No matching IDs found")
-            return
+            print("No matching IDs found between prediction and truth files.")
+            return 0.0
 
         acc = (correct / total) * 100
-        print("-" * 45)
-        print(f"Final Standardized Accuracy: {acc:.2f}% ({correct}/{total})")
+        print("-" * len(headers))
+        print(f"FINAL ACCURACY: {acc:.2f}% ({correct}/{total})")
+        print(f"--- End of Report ---\n")
+        return acc
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in accuracy calculation: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 if __name__ == "__main__":
-    calculate_full_accuracy()
+    import sys
+    pred = sys.argv[1] if len(sys.argv) > 1 else 'results.csv'
+    truth = sys.argv[2] if len(sys.argv) > 2 else 'Dataset/train.csv'
+    calculate_full_accuracy(pred, truth)
