@@ -26,5 +26,7 @@ This document outlines the major architectural shifts, hardships, and design dec
 **Result**: Accuracy dropped to 63.75%. 
 **Lesson**: Increasing context beyond 20 snippets introduces "noise" that drowns out the contradiction and causes the LLM to hallucinate consistency. **Top-20 Reranked** is the definitive sweet spot for DeepSeek R1.
 
-## Final Milestone: 68.75% (55/80)
-We reached a stable plateau at 68.75% using Strategy 4 (LLM-First + Top-20 Reranking). This architecture represents the most balanced trade-off between retrieval recall and reasoning precision.
+## Final Milestone: 69.01% (49/71) - THE BREAKTHROUGH
+We reached a new state-of-the-art at 69.01% using Strategy 5: **Balanced Aggression**. This architecture uses a Groq-based model ensemble (Llama 3.3, Qwen 2.5, Kimi 1.5) combined with a high-capacity **Devil's Advocate** (GPT-OSS 1.5) to arbitrate split decisions and stress-test consistency.
+
+**Success Factor**: The addition of a `CONTRADICTION_SCORE` (1-10) and a mandatory `DIRECT_QUOTE` requirement for overrides successfully eliminated the false-negative bias that plagued Strategy 4.

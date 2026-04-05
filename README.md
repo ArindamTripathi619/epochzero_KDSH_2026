@@ -2,22 +2,23 @@
 
 A hybrid RAG-based classification system for detecting narrative contradictions in historical fiction and literary classics.
 
-## Current Accuracy: **68.75%** (55/80)
+## Current Accuracy: **69.01%** (49/71) 🏆
 
 ## System Overview
 
-This project uses **Pathway** for high-performance vector retrieval and a unified **LLM-First** reasoning pipeline:
+This project uses **Pathway v23** for high-performance vector retrieval and a unified **Balanced Aggression** reasoning pipeline:
 1. **NLI Reranker**: Cross-encoder (`ms-marco-MiniLM-L6-v2`) used for high-precision snippet re-ranking.
-2. **LLM Verification**: High-precision reasoning using **DeepSeek R1** (70B) via the local rotator.
+2. **Balanced Aggression Jury**: Multi-model ensemble (Llama 3.3, Qwen 2.5, Kimi 1.5) with a **Devil's Advocate** (GPT-OSS 1.5) for final arbitration and stress-testing.
 
 ## Quick Start
 
-1. **Install Dependencies**:
+1. **Environment Compatibility (Python 3.14)**:
+   This project is optimized for Python 3.14 on Arch Linux. A `beartype` monkey-patch in `main.py` is required for stability.
+   
+2. **Install Dependencies**:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.txt --only-binary=:all:
    ```
-2. **Environment Setup**:
-   Copy `.env.example` to `.env` and configure your LLM endpoint.
 3. **Run Pipeline**:
    ```bash
    python main.py
@@ -25,11 +26,13 @@ This project uses **Pathway** for high-performance vector retrieval and a unifie
 
 ## Documentation
 
-For deep dives into the technical details, see the `DOCS/` directory:
-- [Architecture & Workflow](DOCS/ARCHITECTURE.md): Mermaid diagrams and component breakdown.
-- [Development History](DOCS/DEVELOPMENT_HISTORY.md): Hardships, triumphs, and the road to 65% accuracy.
+For technical deep dives, see the `DOCS/` directory:
+- [Pathway v23 Migration](DOCS/MIGRATION_V23.md): Refactoring from DocumentStore to VectorStoreServer.
+- [Judge Strategy](DOCS/JUDGE_STRATEGY.md): Detailed breakdown of the "Balanced Aggression" ensemble and DA logic.
+- [Environment Recovery](DOCS/ENVIRONMENT_RECOVERY.md): Stabilizing Python 3.14 with beartype patching.
 
 ## Recent Updates
-- Transitioned to **Chain-of-Thought (CoT)** reasoning for the LLM judge.
-- Implemented **Temporal Consistency** checks for year-based contradictions.
-- Optimized **Pathway** retrieval with a cross-encoder reranker (k=12).
+- **v3.0 (April 2026)**: Achieved **69.01% accuracy** using the Balanced Aggression jury.
+- **Migration**: Full adaptation to **Pathway v23** VectorStoreServer API.
+- **Robustness**: Implemented reliable retry logic for high-concurrency LLM processing.
+- **Timeline Verification**: Enforced `DIRECT_QUOTE` requirements for all contradiction overrides.
