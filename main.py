@@ -1,17 +1,21 @@
 try:
-    import beartype
-    from unittest.mock import MagicMock
     import sys
-    # Bypass beartype decorators and roar exceptions for Python 3.14 compatibility
+    from unittest.mock import MagicMock
+    
+    # 1. Prepare dummy exception classes that inherit from Exception
+    class DummyBeartypeException(Exception): pass
+    
+    # 2. Mock beartype.roar
+    mock_roar = MagicMock()
+    mock_roar.BeartypeDecorHintNonpepException = DummyBeartypeException
+    mock_roar.BeartypeCallHintParamViolation = DummyBeartypeException
+    mock_roar.BeartypeCallHintViolation = DummyBeartypeException
+    sys.modules['beartype.roar'] = mock_roar
+    
+    # 3. Mock beartype
     mock_beartype = MagicMock()
     mock_beartype.beartype = lambda x: x  # Identity decorator
     sys.modules['beartype'] = mock_beartype
-    
-    mock_roar = MagicMock()
-    # Define the specific exception Pathway expects
-    class BeartypeDecorHintNonpepException(Exception): pass
-    mock_roar.BeartypeDecorHintNonpepException = BeartypeDecorHintNonpepException
-    sys.modules['beartype.roar'] = mock_roar
 except ImportError:
     pass
 
@@ -87,7 +91,6 @@ def perform_programmatic_reasoning(backstory: str, chunks: list, metadata: list,
     except Exception as e:
         return json.dumps({"verdict": "Consistent", "reason": f"Programmatic Error: {str(e)}"})
 
-@pw.udf
 def extract_true_identity(backstory: str, original_label: str) -> str:
     import requests, os, json, re
     from dotenv import load_dotenv
@@ -101,12 +104,15 @@ If no clear name is mentioned, return the original label provided.
 Original Label: {original_label}
 Backstory: {backstory}"""
     
+    import random, time
+    time.sleep(random.uniform(0.1, 5.0)) # Jitter to prevent burst
+    
     try:
         res = requests.post(
             f"{API_BASE}/chat/completions",
              json={"model": "groq-llama-small", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0},
              headers={"Authorization": f"Bearer {DUMMY_KEY}"},
-             timeout=10
+             timeout=60
         )
         if res.status_code == 200:
             content = res.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
@@ -119,8 +125,8 @@ Backstory: {backstory}"""
     return original_label
 
 @pw.udf
-def run_nli_evaluation(backstory: str, book_character: str, chunks: list, metadata: list, programmatic_results: str) -> tuple[str, str, str]:
-    import json
+def run_nli_evaluation(backstory: str, book_character: str, chunks: list, metadata: list, programmatic_results: str, plot_map: str = "") -> tuple[str, str, str]:
+    import json, re
     # 1. Programmatic Veto
     try:
          prog = json.loads(programmatic_results)
@@ -130,7 +136,6 @@ def run_nli_evaluation(backstory: str, book_character: str, chunks: list, metada
     except: pass
 
     # 1.1 Strategy 6: Identity Auto-Correction
-    # We call the identity extractor to ensure we aren't judging the wrong name (15% metadata error fix)
     true_identity = extract_true_identity(backstory, book_character)
     if true_identity.lower() != book_character.lower():
         print(f"[STRATEGY 6] Identity Mismatch: CSV says '{book_character}', Backstory describes '{true_identity}'")
@@ -149,49 +154,74 @@ def run_nli_evaluation(backstory: str, book_character: str, chunks: list, metada
         # 3. NLI Evaluation (Atomic Claims)
         nli_status, nli_rationale, reranked_chunks = evaluate_backstory_nli(backstory, formatted)
         
-        # Strategy 3: Mini Plot-Map Summarization
-        plot_summary = ""
-        try:
-             plot_summary_prompt = "Write a 500-word plot summary of the events described in these chunks. Include Key character arcs, Major timeline anchors, and Central causal events:\n\n"
-             for c in formatted[:30]:
-                  plot_summary_prompt += f"[{c['chapter']}] {c['text'][:300]}\n"
-
-             import requests, os
-             from dotenv import load_dotenv
-             load_dotenv()
-             API_BASE = os.getenv("OPENAI_API_BASE", "http://localhost:8000/v1")
-             apiKey = os.environ.get("OPENAI_API_KEY", "sk-dummy")
-             res = requests.post(
-                 f"{API_BASE}/chat/completions",
-                 json={"model": "groq-scout", "messages": [{"role": "user", "content": plot_summary_prompt}]},
-                 headers={"Authorization": f"Bearer {apiKey}"},
-                 timeout=20
-             )
-             if res.status_code == 200:
-                  plot_summary = res.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-             print(f"DEBUG: Plot summary failed: {e}")
-
-        # 4. LLM Verification (Mandatory for ALL stories in Strategy 3/5)
+        # 3b. Hierarchical Plot Map context (V5.0)
+        final_plot_context = plot_map if len(plot_map) > 50 else ""
+        
+        # 4. LLM Verification — First Pass
         from src.models.llm_judge import ConsistencyJudge, build_consistency_prompt
         judge = ConsistencyJudge()
-        # Use reranked_chunks and Top-20 window
         evidence_text = "\n".join([f"- [{c['chapter']}] {c['text'][:450]}" for c in reranked_chunks[:20]])
+        prompt = build_consistency_prompt(backstory, true_identity, evidence_text, "", final_plot_context)
         
-        # Pass the TRUE IDENTITY here
-        prompt = build_consistency_prompt(backstory, true_identity, evidence_text, "", plot_summary)
-        
-        print(f"DEBUG: Processing Story {backstory[:15]} for {true_identity}... calling LLM Jury.", flush=True)
-        res = judge.judge_single(prompt)
+        print(f"DEBUG: Story Verification with Plot Map context... calling LLM Jury.", flush=True)
+        res = judge.judge_single(prompt, plot_map=plot_map)
         llm_label = res.get("label", 1)
         llm_rationale = res.get("rationale", "")
-        
-        # Final Verdict based primarily on LLM Jury
+        da_score = res.get("da_score", 5)
+
+        # ============================================================
+        # 5. DA-Guided Targeted Re-Retrieval (V5.0 — Issue #2 Strategy 3)
+        # If DA score is in the ambiguous zone (5-7), find targeted
+        # evidence for the specific claim DA is uncertain about,
+        # then re-judge with augmented evidence.
+        # ============================================================
+        if 5 <= da_score <= 7:
+            print(f"[DA-RERETRIEVAL] Ambiguous DA score ({da_score}). Searching for targeted evidence...", flush=True)
+            try:
+                # Extract the claim DA is uncertain about from its rationale
+                da_claim = ""
+                # Look for DA's direct quote or key claim
+                quote_match = re.search(r'DIRECT_QUOTE:\s*(.+?)(?:\||$)', llm_rationale)
+                if quote_match:
+                    da_claim = quote_match.group(1).strip()
+                if not da_claim or len(da_claim) < 10:
+                    # Fallback: use the first sentence of the backstory that seems most contentious
+                    da_claim = backstory[:300]
+
+                # Use bi-encoder to find the best matching chunks across ALL available evidence
+                from sentence_transformers import SentenceTransformer, util
+                bi_enc = SentenceTransformer('all-MiniLM-L6-v2')
+                all_chunk_texts = [c.decode('utf-8') if isinstance(c, bytes) else str(c) for c in chunks]
+                
+                if all_chunk_texts:
+                    claim_emb = bi_enc.encode(da_claim, convert_to_tensor=True)
+                    chunk_embs = bi_enc.encode(all_chunk_texts, convert_to_tensor=True)
+                    hits = util.semantic_search(claim_emb, chunk_embs, top_k=5)[0]
+                    
+                    # Get targeted evidence (top-5 most relevant to the ambiguous claim)
+                    targeted_chunks = [all_chunk_texts[hit['corpus_id']] for hit in hits if hit['score'] > 0.20]
+                    
+                    if targeted_chunks:
+                        targeted_evidence = "\n".join([f"- [TARGETED] {tc[:500]}" for tc in targeted_chunks])
+                        augmented_evidence = f"{evidence_text}\n\n### ADDITIONAL TARGETED EVIDENCE (for ambiguous claim) ###\n{targeted_evidence}"
+                        
+                        prompt2 = build_consistency_prompt(backstory, true_identity, augmented_evidence, "", final_plot_context)
+                        print(f"[DA-RERETRIEVAL] Re-judging with {len(targeted_chunks)} additional targeted chunks...", flush=True)
+                        res2 = judge.judge_single(prompt2, plot_map=plot_map)
+                        
+                        # Use the re-retrieval result as final
+                        llm_label = res2.get("label", llm_label)
+                        llm_rationale = f"[RE-RETRIEVAL] {res2.get('rationale', llm_rationale)}"
+                        print(f"[DA-RERETRIEVAL] Final verdict after re-retrieval: {'Contradictory' if llm_label == 0 else 'Consistent'}", flush=True)
+            except Exception as e:
+                print(f"[DA-RERETRIEVAL] Re-retrieval failed: {e}. Keeping original verdict.")
+
+        # Final Verdict
         if llm_label == 0:
-            return "Contradictory", "High", f"LLM-JURY VERIFIED ({true_identity}): {llm_rationale}"
+            return "Contradictory", "High", f"LLM-JURY ({true_identity}): {llm_rationale}"
         else:
             confidence = "Medium" if nli_status == 1 else "High"
-            return "Consistent", confidence, f"LLM-JURY CONSISTENT ({true_identity}): {llm_rationale}"
+            return "Consistent", confidence, f"LLM-JURY ({true_identity}): {llm_rationale}"
 
     except Exception as e:
         return "Consistent", "Low", f"Pipeline error: {str(e)}"
@@ -278,18 +308,35 @@ def run_pipeline():
         load_dotenv()
         API_BASE = os.getenv("OPENAI_API_BASE", "http://localhost:8000/v1")
         DUMMY_KEY = os.environ.get("OPENAI_API_KEY", "sk-dummy")
-        prompt = f"Decompose this backstory into 5 standalone, concise claims. Return ONLY a JSON list of strings.\nBackstory: {backstory}"
+        
+        prompt = f"""Decompose this backstory into 6-8 independent, atomic, and testable claims. 
+        Each claim should be a single, standalone sentence.
+        Format your response as a simple JSON list of strings.
+        
+        Backstory: {backstory}"""
+        
+        import random, time
+        time.sleep(random.uniform(0.1, 5.0)) # Jitter to prevent burst
+
         try:
-            res = requests.post(f"{API_BASE}/chat/completions",
-                 json={"model": "groq-llama-small", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0},
-                 headers={"Authorization": f"Bearer {DUMMY_KEY}"}, timeout=15)
+            res = requests.post(
+                f"{API_BASE}/chat/completions",
+                json={"model": "groq-llama-small", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0},
+                headers={"Authorization": f"Bearer {DUMMY_KEY}"},
+                timeout=60
+            )
             if res.status_code == 200:
                 content = res.json()["choices"][0]["message"]["content"]
                 match = re.search(r'\[.*\]', content, re.DOTALL)
                 if match:
                     claims = json.loads(match.group(0))
-                    return [str(c) for c in claims if len(str(c)) > 10]
-        except: pass
+                    # Quality filter: remove very short or trivial claims
+                    return [str(c) for c in claims if len(str(c)) > 15]
+        except Exception as e:
+            print(f"DEBUG: Claim decomposition failed: {e}")
+        
+        # Fallback: simple split if LLM fails
+        return [s.strip() for s in backstory.split('.') if len(s.strip()) > 15]
         return [backstory]
 
     query_table_lists = train_with_names.select(
@@ -349,9 +396,38 @@ def run_pipeline():
         chunks=pw.this.flat_results[0]
     )
     
-    # 6. Reasoning
+    # 6. Load Hierarchical Plot Maps (V5.0 — generated once, cached on disk)
+    plot_maps = {}
+    plot_maps_dir = "Dataset/PlotMaps/"
+    if os.path.exists(plot_maps_dir):
+        for pm_file in os.listdir(plot_maps_dir):
+            if pm_file.endswith("_plot_map.txt"):
+                book_key = pm_file.replace("_plot_map.txt", "").lower().strip()
+                with open(os.path.join(plot_maps_dir, pm_file), 'r', encoding='utf-8') as f:
+                    plot_maps[book_key] = f.read()
+        print(f"[V5.0] Loaded {len(plot_maps)} Plot Maps: {list(plot_maps.keys())}")
+    else:
+        print(f"[V5.0] WARNING: No Plot Maps directory found at {plot_maps_dir}")
+
+    @pw.udf
+    def get_plot_map(book_name: str) -> str:
+        """Look up the pre-generated plot map for a book."""
+        if not book_name:
+            return ""
+        # Normalize: "The Count of Monte Cristo.txt" → "the count of monte cristo"
+        norm = book_name.lower().replace(".txt", "").strip().strip('"').strip("'")
+        # Try direct match first, then substring match
+        if norm in plot_maps:
+            return plot_maps[norm]
+        for key, val in plot_maps.items():
+            if norm in key or key in norm:
+                return val
+        return ""
+
+    # 7. Reasoning
     reasoning_table = joined_table.select(
         *pw.this,
+        plot_map=get_plot_map(pw.this.book_name),
         programmatic_results=perform_programmatic_reasoning(
             pw.this.backstory,
             pw.this.chunks,
@@ -364,10 +440,11 @@ def run_pipeline():
         *pw.this,
         judgment_data=run_nli_evaluation(
             pw.this.backstory,
-            pw.this.character,  # PASS CHARACTER HERE
+            pw.this.character,
             pw.this.chunks,
             pw.this.metadata,
-            pw.this.programmatic_results
+            pw.this.programmatic_results,
+            pw.this.plot_map  # V5.0: Pass the Hierarchical Plot Map!
         )
     ).select(
         *pw.this,

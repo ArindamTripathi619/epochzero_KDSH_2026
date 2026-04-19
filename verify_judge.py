@@ -1,3 +1,17 @@
+try:
+    import sys
+    from unittest.mock import MagicMock
+    class DummyBeartypeException(Exception): pass
+    mock_roar = MagicMock()
+    mock_roar.BeartypeDecorHintNonpepException = DummyBeartypeException
+    mock_roar.BeartypeCallHintParamViolation = DummyBeartypeException
+    mock_roar.BeartypeCallHintViolation = DummyBeartypeException
+    sys.modules['beartype.roar'] = mock_roar
+    mock_beartype = MagicMock()
+    mock_beartype.beartype = lambda x: x
+    sys.modules['beartype'] = mock_beartype
+except ImportError:
+    pass
 
 import sys
 import os

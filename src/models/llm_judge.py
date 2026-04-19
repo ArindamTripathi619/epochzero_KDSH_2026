@@ -12,10 +12,13 @@ api_lock = threading.Lock()
 
 def _call_with_retry(client, model: str, messages: list, max_retries: int = 10) -> str:
     """Call LLM with exponential backoff retry logic for 429s and other transient errors."""
+    import time
+    from datetime import datetime
+    
     for attempt in range(max_retries):
         try:
-            # Respect rate limits with a small baseline delay
-            # time.sleep(0.5) 
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] [LLM-CALL START] Model: {model} | Attempt: {attempt+1}", flush=True)
             
             response = client.chat.completions.create(
                 model=model,
@@ -24,17 +27,23 @@ def _call_with_retry(client, model: str, messages: list, max_retries: int = 10) 
                 max_tokens=800
             )
             content = response.choices[0].message.content
+            
+            timestamp_end = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp_end}] [LLM-CALL END] Model: {model} | Success", flush=True)
+            
             if content:
                 return content
         except Exception as e:
             err_msg = str(e)
-            # If rate limited (429), wait longer
+            timestamp_err = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp_err}] [LLM-CALL ERROR] Model: {model} | Error: {err_msg}", flush=True)
+            
             if "429" in err_msg or "rate_limit" in err_msg.lower():
-                wait_time = (2 ** attempt) + 5 # More aggressive backoff
+                wait_time = (2 ** attempt) + 5
             else:
                 wait_time = (2 ** attempt) + 1
             
-            print(f"DEBUG: Attempt {attempt+1} failed for {model}: {err_msg}. Retrying in {wait_time}s...")
+            print(f"DEBUG: Attempt {attempt+1} failed for {model}. Retrying in {wait_time}s...")
             time.sleep(wait_time)
             
     raise Exception(f"All {max_retries} attempts failed for model {model}")
@@ -145,13 +154,22 @@ class ConsistencyJudge:
             # but we mark it clearly in the rationale.
             return {"label": 1, "rationale": f"CRITICAL_FAILURE on {model}: {str(e)}", "score": 0, "evidence": ""}
 
-    def judge_single(self, prompt: str) -> dict:
-        """Atomic judge call — applies multi-model consensus and balanced devil's advocate."""
-        # Space out stories to prevent LiteLLM saturation
-        time.sleep(2.0)
+    def judge_single(self, prompt: str, plot_map: str = "") -> dict:
+        """
+        Final ensemble judge with Devil's Advocate intervention.
+        V5.0: Incorporates Hierarchical Plot Maps for global context.
+        """
+        # Space out stories to prevent LiteLLM saturation/429 crashes
+        # With 80 rows, we want to spread out the 'thundering herd'
+        import random
+        time.sleep(random.uniform(2.0, 15.0))
         
-        ensemble_models = ["groq-llama", "groq-qwen", "groq-kimi"]
-        devils_advocate_model = "groq-gpt-oss" 
+        # Inject Plot Map into prompt if available
+        if plot_map:
+            prompt = f"### HIERARCHICAL PLOT MAP (Global Narrative Context) ###\n{plot_map}\n\n{prompt}"
+
+        ensemble_models = ["groq-llama", "or-trinity", "or-nemotron-9b"]
+        devils_advocate_model = "groq-qwen"
         
         results = []
         labels = []
@@ -197,17 +215,19 @@ You MUST provide a DIRECT_QUOTE from the provided evidence excerpts to support a
         final_label = 1 if ensemble_sum >= 2 else 0
         override_msg = ""
         
-        if final_label == 1 and da_res["label"] == 0 and da_res["score"] >= 8 and len(da_res["evidence"]) > 10:
+        # V5.0 CALIBRATED THRESHOLDS: Overwrite if DA is confident (7+) or dismissive (4-)
+        if final_label == 1 and da_res["label"] == 0 and da_res["score"] >= 7 and len(da_res["evidence"]) > 10:
             final_label = 0
-            override_msg = f"[DA OVERRIDE: Contradiction found with score {da_res['score']} and quote '{da_res['evidence'][:50]}']"
-        elif final_label == 0 and da_res["score"] <= 3:
+            override_msg = f"[DA OVERRIDE: Contradiction found with score {da_res['score']}]"
+        elif final_label == 0 and da_res["score"] <= 4:
             final_label = 1
             override_msg = f"[DA OVERRIDE: Consistent - Dismissed weak contradiction (score {da_res['score']})]"
 
         return {
             "label": final_label, 
             "rationale": f"{override_msg} | DA_SCORE: {da_res['score']} | {ensemble_rationale} | DA_FINAL: {da_res['rationale'][:200]}",
-            "confidence": "High" if da_res["score"] >= 8 or da_res["score"] <= 2 else "Medium"
+            "confidence": "High" if da_res["score"] >= 8 or da_res["score"] <= 2 else "Medium",
+            "da_score": da_res["score"]  # V5.0: Expose DA score for re-retrieval trigger
         }
 
     def judge(self, prompts_table: pw.Table):

@@ -15,11 +15,16 @@ Dataset/train.csv.tmp
 
 # Outputs
 results.csv
+results_*.csv
 *_KDSH_2026.zip
 debug_retrieval_results.csv
+.tmp/
 .pathway/
 logs/
 API_REPORT.md
 Dataset/train_parts/
 Dataset/test_eval/
 .entities_cache.pkl
+
+# Issues
+DOCS/issue/
